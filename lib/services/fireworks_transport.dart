@@ -492,3 +492,4 @@ Map<String, Object> _traceMessage(Map<String, Object> entry) {
   }
   return {'role': entry['role'] as String, 'content': stripped};
 }
+

@@ -23,21 +23,25 @@ You are a generative UI engine. You receive a request and render it as a live, i
 
 The framework supplies the full A2UI component schema and message protocol: createSurface + updateComponents, fenced ```json blocks, a unique surfaceId per response, a root component, and each component's required properties. Use it directly. Output ONLY A2UI messages — no plan, no reasoning, no preamble, no restating the input. Generate the surface immediately.
 
-SURFACE STRUCTURE — build a RICH, filled surface. EVERY surface follows this template:
-- 2–4 GUIDANCE components: several Cards that deliver the context/instructions. A Card holds SEVERAL related items (Icon + h3 title + body text), packed into a multi-item Column — dense content blocks. Lay out two Cards SIDE BY SIDE in a Row (each `{"weight":1}`); use a second Row for the next pair, or a full-width Card for a longer block. Fill the surface — do not leave it sparse.
-- exactly 1 INTERACTION component: a ChoicePicker (pick a path), a TextField (free text), or a primary Button (confirm / advance / call). Never just static text and stop; never more than one interactive control.
-- Do NOT produce a tall stack of many full-width single-line rows. Use 2-up Card Rows + one interaction.
+SURFACE STRUCTURE — build a RICH, FILLED, VISUALLY VARIED surface. EVERY surface follows this template:
+- 2–4 GUIDANCE blocks. VARY the block types — do NOT make every block the same shape. Mix these:
+  - HERO card (full width): a big Icon + h1/h2 headline + a short body line — one striking block at the top.
+  - 2-UP GRID: a Row of two Cards (each `{"weight":1}`), each a compact block (Icon + h3 title + 1 body line). Use a second such Row for another pair.
+  - CHECKLIST card: for step-by-step instructions, use a ChoicePicker with `"variant":"multipleSelection"` (mark-each-step-done) OR a List — NOT a stack of repeated icon+title+body rows.
+  - STAT / CALLOUT card: a big number or short label (h1) + caption, optionally a Slider for a quantity.
+- exactly 1 INTERACTION component: a ChoicePicker (big pills), a TextField, or a big primary Button. Never just static text and stop; never more than one interactive control.
+- Fill the surface — do not leave it sparse. Do NOT produce a tall stack of many full-width single-line rows.
 
-VISUAL DESIGN — build a real, varied, interactive interface, never a word dump and never a flat list of full-width rows.
-- Do NOT stretch every component full-width. Put blocks SIDE BY SIDE: a Row whose children each set `"weight": 1` share the width equally (e.g. two Cards in a Row, each `{"weight":1}`). This is the default way to lay out two guidance cards.
+VISUAL DESIGN — big, aesthetic, DYNAMIC blocks. Never a word dump, never a flat repeating list.
+- ANTI-PATTERN (banned): repeating `Row[Icon, Text(title)] + Text(body)` for every item. That is a boring list. Instead PACK several items into one Card with a Column that mixes h3 titles, body lines, and a control; or use a ChoicePicker(multipleSelection) checklist / List for steps.
+- BIG: large headline text, oversized cards that fill their column, large tap targets, generous visual weight. The most important action = a big "primary" Button.
+- Do NOT stretch every component full-width. Put blocks SIDE BY SIDE: a Row whose children each set `"weight": 1` share the width equally (e.g. two Cards in a Row, each `{"weight":1}`). Default for two guidance cards.
 - CRITICAL: NEVER set `align: "stretch"` on a Row. The surface scrolls vertically, so a Row has unbounded height; cross-axis stretch then forces infinite height and crashes the layout. Use `align: "start"` or `"center"` on Rows. (Column `align: "stretch"` is fine — that stretches width, which is bounded.)
-- GROUP content into Cards. A Card holds SEVERAL related items (Icon + h3 title + body text), packed with a multi-item Column — not one lonely line per card.
-- Use a DIVERSE mix of components across the surface — never just a stack of Text. Reach for Icon (visual cues), ChoicePicker (selection), Button (actions), TextField (input), Divider (sections), Slider / CheckBox / List where they fit the data. Match the component to the data shape.
-- LAYOUT: use Row/Column with justify ("center","spaceBetween","start") and align ("center","start"). Put an Icon BESIDE a headline in a Row. Put the interaction control in its own Row/area, not stretched into a giant empty row.
+- DIVERSE components: Icon (visual cues — warning, call, locationOn, error, lock, info, refresh, favorite), ChoicePicker (selection / checklist), Button (actions), TextField (input), Divider (sections), Slider (quantities), CheckBox (toggles), List (ordered items). Match the component to the data shape — a different component per block where it fits.
+- LAYOUT: Row/Column with justify ("center","spaceBetween","start") and align ("center","start"). Icon BESIDE a headline in a Row. Interaction control in its own area, not stretched into a giant empty row.
 - HIERARCHY with Text variants: one h1 headline (with an Icon beside it), h2 section headers, h3 item titles, caption notes, short body lines. Keep each Text concise (~6 words).
-- Make the single most important action a "primary" Button; secondary actions "borderless" Buttons.
-- AESTHETIC: native macOS dark — system-blue (#0A84FF) accent, translucent rounded cards (10px), hairline 0.5px separators, SF-style tight typography, soft flat surfaces, no glow/neon. Buttons ~44px / 8px radius; ChoicePicker as uniform flat segmented pills (7px radius, 2–5 short options, no checkmarks).
-- Avoid empty space: do not place one short Text alone in a full-width stretch row. Either group it into a Card with siblings, put it in a Row with an Icon, or put it beside another block via a weighted Row.
+- AESTHETIC: dark HUD — cyan (#00D4FF) accent, translucent rounded cards (14px), hairline separators, bold white headings, soft flat surfaces, no glow/neon. Big primary buttons; ChoicePicker as uniform flat pills (2–5 short options, no checkmarks).
+- Avoid empty space: do not place one short Text alone in a full-width stretch row. Group into a Card with siblings, pair with an Icon in a Row, or put beside another block via a weighted Row.
 
 INTERACTIVITY — use inputs only when you genuinely need info that changes the response.
 - Ask one question at a time. ChoicePicker for fixed options, TextField for free text. Give the input a data path and bind that SAME path in the submit button:
@@ -231,7 +235,6 @@ class _HudScreenState extends State<HudScreen> {
         // here also lets an action-triggered follow-up recover from a prior
         // turn's error.
         case ConversationComponentsUpdated(:final surfaceId, :final definition):
-          _sanitizeSurface(definition);
           setState(() {
             _activeSurfaceId = surfaceId;
             if (!_surfaces.contains(surfaceId)) _surfaces.add(surfaceId);
@@ -265,7 +268,6 @@ class _HudScreenState extends State<HudScreen> {
   @override
   void dispose() {
     _autoCaptureTimer?.cancel();
-    _autoListenTimer?.cancel();
     _conversation.dispose();
     _controller.dispose();
     _speech.dispose();
@@ -305,7 +307,6 @@ class _HudScreenState extends State<HudScreen> {
       // ConversationError is emitted separately by the engine for transport
       // failures; this catches anything that escaped (e.g. a timeout).
       debugPrint('[Guardian/HUD] sendRequest threw: $e');
-      if (!mounted) return;
       setState(() {
         _state = HudState.active;
         _errorMessage = e.toString();
@@ -402,6 +403,7 @@ class _HudScreenState extends State<HudScreen> {
       _beginVoiceInput(followUp: true);
     });
   }
+
 
   /// Sends a follow-up reply in an ongoing conversation (a spoken answer to a
   /// question, or a custom typed follow-up). Unlike [_sendScenario] it does not
@@ -637,7 +639,6 @@ class _HudScreenState extends State<HudScreen> {
     _speech.stopListening();
     _autoCaptureTimer?.cancel();
     _autoCaptureTimer = null;
-    _autoListenTimer?.cancel();
     _camera.stop();
     setState(() {
       _state = HudState.normal;
@@ -716,6 +717,7 @@ class _HudScreenState extends State<HudScreen> {
   /// Slim overlay shown while the mic is listening. Sits on top of the current
   /// surface (which is NOT replaced) and shows the live transcript; tap to
   /// cancel. The surface keeps rendering/generated UI behind it and auto-scrolls.
+
   Widget _listeningBar() {
     return Positioned(
       top: 16,
@@ -1790,8 +1792,8 @@ class _HudScreenState extends State<HudScreen> {
         elevation: 0,
         margin: EdgeInsets.zero,
         shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(14),
-          side: BorderSide(color: Colors.white.withValues(alpha: 0.08)),
+          borderRadius: BorderRadius.circular(18),
+          side: BorderSide(color: Colors.white.withValues(alpha: 0.1)),
         ),
       ),
       elevatedButtonTheme: ElevatedButtonThemeData(
@@ -1800,68 +1802,68 @@ class _HudScreenState extends State<HudScreen> {
           foregroundColor: Colors.black,
           // Finite min width so buttons can sit inside a Row without forcing
           // infinite width (Size.fromHeight uses width=∞ and explodes in a Row).
-          minimumSize: const Size(96, 48),
-          padding: const EdgeInsets.symmetric(horizontal: 22, vertical: 12),
+          minimumSize: const Size(120, 56),
+          padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 16),
           shape:
-              RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+              RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
           elevation: 0,
-          textStyle: const TextStyle(fontWeight: FontWeight.w700, fontSize: 16),
+          textStyle: const TextStyle(fontWeight: FontWeight.w800, fontSize: 18),
         ),
       ),
       textButtonTheme: TextButtonThemeData(
         style: TextButton.styleFrom(
           foregroundColor: accent,
-          minimumSize: const Size(80, 44),
-          padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 10),
+          minimumSize: const Size(96, 48),
+          padding: const EdgeInsets.symmetric(horizontal: 22, vertical: 12),
           shape:
               RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-          textStyle: const TextStyle(fontWeight: FontWeight.w600, fontSize: 15),
+          textStyle: const TextStyle(fontWeight: FontWeight.w700, fontSize: 16),
         ),
       ),
       chipTheme: ChipThemeData(
         labelStyle: const TextStyle(
-            color: Colors.white, fontSize: 14, fontWeight: FontWeight.w600),
+            color: Colors.white, fontSize: 15, fontWeight: FontWeight.w600),
         secondaryLabelStyle: const TextStyle(
-            color: accent, fontSize: 14, fontWeight: FontWeight.w700),
-        labelPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 2),
-        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+            color: accent, fontSize: 15, fontWeight: FontWeight.w700),
+        labelPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 3),
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
         shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(20),
-          side: BorderSide(color: Colors.white.withValues(alpha: 0.12)),
+          borderRadius: BorderRadius.circular(24),
+          side: BorderSide(color: Colors.white.withValues(alpha: 0.14)),
         ),
-        backgroundColor: Colors.white.withValues(alpha: 0.04),
-        selectedColor: accent.withValues(alpha: 0.18),
+        backgroundColor: Colors.white.withValues(alpha: 0.05),
+        selectedColor: accent.withValues(alpha: 0.2),
         showCheckmark: false,
       ),
       dividerTheme: DividerThemeData(
-        color: Colors.white.withValues(alpha: 0.08),
+        color: Colors.white.withValues(alpha: 0.1),
         thickness: 1,
-        space: 10,
+        space: 14,
       ),
       textTheme: TextTheme(
         headlineLarge: const TextStyle(
             color: Colors.white,
-            fontSize: 30,
+            fontSize: 34,
             fontWeight: FontWeight.w800,
-            letterSpacing: 0.5,
-            height: 1.15),
+            letterSpacing: 0.3,
+            height: 1.12),
         headlineMedium: TextStyle(
             color: Colors.white.withValues(alpha: 0.5),
-            fontSize: 12,
+            fontSize: 13,
             fontWeight: FontWeight.w700,
             letterSpacing: 2),
         headlineSmall: const TextStyle(
             color: Colors.white,
-            fontSize: 20,
+            fontSize: 22,
             fontWeight: FontWeight.w700),
         bodyLarge: const TextStyle(
-            color: Colors.white, fontSize: 16, height: 1.4),
+            color: Colors.white, fontSize: 17, height: 1.4),
         bodyMedium: TextStyle(
-            color: Colors.white.withValues(alpha: 0.7),
+            color: Colors.white.withValues(alpha: 0.72),
             fontSize: 15,
             height: 1.4),
         bodySmall: TextStyle(
-            color: Colors.white.withValues(alpha: 0.45),
+            color: Colors.white.withValues(alpha: 0.5),
             fontSize: 13),
       ),
     );
