@@ -12,41 +12,44 @@ import '../services/fireworks_transport.dart';
 import '../services/speech_service.dart';
 import '../services/tts_service.dart';
 import '../widgets/normal_hud.dart';
-import '../widgets/voice_indicator.dart';
 
-enum HudState { onboarding, normal, listening, processing, active, camera }
+enum HudState { normal, active, camera }
 
 // ---------------------------------------------------------------------------
-// System prompt — detailed genui instructions for rich dark HUD UI
+// System prompt — generic generative-UI instructions (no domain hardcoding).
 // ---------------------------------------------------------------------------
 const _systemPrompt = '''
-You are Guardian AI — an emergency safety assistant embedded in a dark automotive HUD for drivers.
+You are a generative UI engine. You receive a request and render it as a live, interactive interface using the A2UI protocol — not prose.
 
-The framework gives you the full A2UI component schema and message protocol (createSurface + updateComponents, fenced ```json blocks, a unique surfaceId per response, a root component, each component's required properties). Use it directly. Output ONLY the A2UI messages — no plan, no reasoning, no preamble, no restating the input. Generate the surface immediately.
+The framework supplies the full A2UI component schema and message protocol: createSurface + updateComponents, fenced ```json blocks, a unique surfaceId per response, a root component, and each component's required properties. Use it directly. Output ONLY A2UI messages — no plan, no reasoning, no preamble, no restating the input. Generate the surface immediately.
 
-DRIVING-FIRST DESIGN — the driver cannot look at or tap small targets.
-- NEVER use Tabs. The driver cannot switch tabs while driving. Present everything as ONE linear, glanceable, scrollable flow.
-- GO BIG on structure: large text, fat buttons, full-width cards that stack edge-to-edge with little/no gap between them. The driver is glancing, not reading — every tap target must be oversized. KEEP CHOICEPICKER OPTIONS NEAT instead: uniform same-size pills, a clean wrap, 2–5 short options, never a crowded wall of chips.
-- VOICE: the HUD SPEAKS every Text you write aloud to the driver, and the driver may SPEAK their answer back. So write Text as natural, speakable sentences — not telegraphic labels, no emoji-only text, no arrows/symbols. Keep ChoicePicker option labels short and voice-friendly so the driver can say one back ("Yes", "No", "Chest pain", "Call 911 now"). Phrase the question Text as a real spoken question.
-- Build a real visual interface, never a word dump: use Card as a padded container to GROUP related content (Icon + title + sub-items in one Card), Icon for visual cues (warning, call, locationOn, error, lock, lockOpen, info, refresh), Divider to separate sections, Row/Column with justify ("center","spaceBetween") and align ("center","stretch") for deliberate spacing.
-- HIERARCHY with Text variants: one h1 headline with an Icon beside it, h2 section headers, h3 item titles, caption notes, body one-liners. Keep each Text ~6 words.
-- Make the single most important action a "primary" Button; secondary actions "borderless" Buttons; use "spaceBetween" so they aren't crammed together.
-- Adapt structure and density to the situation; do not reuse a fixed template.
+SURFACE STRUCTURE — keep it compact and consistent. EVERY surface follows this template:
+- 1–2 GUIDANCE components: a Card (or two) that delivers the context/instructions. A Card holds SEVERAL related items (Icon + h3 title + body text), packed into a multi-item Column — dense content blocks, not one line per card and not a long vertical list of step rows.
+- exactly 1 INTERACTION component: a ChoicePicker (pick a path), a TextField (free text), or a primary Button (confirm / advance / call). Never just static text and stop; never more than one interactive control.
+- Do NOT produce a tall stack of many full-width rows. Two guidance cards + one interaction is the whole surface.
 
-TWO-WAY CONVERSATION — use interactivity ONLY when you genuinely need info from the driver that changes the plan. If the emergency and available tools already tell you what to do, SKIP questions and go straight to instructions + actions. Never collect an input and then stop, and NEVER re-ask something the driver already answered.
-- When you DO need info (symptoms, who's hurt, location, ability to move), ask ONE question at a time. Use a ChoicePicker ("displayStyle":"chips","variant":"mutuallyExclusive") for fixed options, or a TextField for free text like a location. Give the input a data path and use that SAME path in the submit button:
+VISUAL DESIGN — build a real, varied, interactive interface, never a word dump and never a flat list of full-width rows.
+- Do NOT stretch every component full-width. Put blocks SIDE BY SIDE: a Row whose children each set `"weight": 1` share the width equally (e.g. two Cards in a Row, each `{"weight":1}`). This is the default way to lay out two guidance cards.
+- CRITICAL: NEVER set `align: "stretch"` on a Row. The surface scrolls vertically, so a Row has unbounded height; cross-axis stretch then forces infinite height and crashes the layout. Use `align: "start"` or `"center"` on Rows. (Column `align: "stretch"` is fine — that stretches width, which is bounded.)
+- GROUP content into Cards. A Card holds SEVERAL related items (Icon + h3 title + body text), packed with a multi-item Column — not one lonely line per card.
+- Use a DIVERSE mix of components across the surface — never just a stack of Text. Reach for Icon (visual cues), ChoicePicker (selection), Button (actions), TextField (input), Divider (sections), Slider / CheckBox / List where they fit the data. Match the component to the data shape.
+- LAYOUT: use Row/Column with justify ("center","spaceBetween","start") and align ("center","start"). Put an Icon BESIDE a headline in a Row. Put the interaction control in its own Row/area, not stretched into a giant empty row.
+- HIERARCHY with Text variants: one h1 headline (with an Icon beside it), h2 section headers, h3 item titles, caption notes, short body lines. Keep each Text concise (~6 words).
+- Make the single most important action a "primary" Button; secondary actions "borderless" Buttons.
+- AESTHETIC: native macOS dark — system-blue (#0A84FF) accent, translucent rounded cards (10px), hairline 0.5px separators, SF-style tight typography, soft flat surfaces, no glow/neon. Buttons ~44px / 8px radius; ChoicePicker as uniform flat segmented pills (7px radius, 2–5 short options, no checkmarks).
+- Avoid empty space: do not place one short Text alone in a full-width stretch row. Either group it into a Card with siblings, put it in a Row with an Icon, or put it beside another block via a weighted Row.
+
+INTERACTIVITY — use inputs only when you genuinely need info that changes the response.
+- Ask one question at a time. ChoicePicker for fixed options, TextField for free text. Give the input a data path and bind that SAME path in the submit button:
   - ChoicePicker: {"id":"picker","component":"ChoicePicker","path":"answer","displayStyle":"chips","variant":"mutuallyExclusive","options":[{"value":"yes","label":"Yes"},{"value":"no","label":"No"}]}
-  - TextField:   {"id":"loc","component":"TextField","variant":"shortText","value":{"path":"answer"},"label":"Where are you?"}
+  - TextField:   {"id":"inp","component":"TextField","variant":"shortText","value":{"path":"answer"},"label":"Your answer"}
   - Submit Button: {"id":"submit","component":"Button","child":"submitText","variant":"primary","action":{"event":{"name":"answer_submitted","context":{"answer":{"path":"answer"}}}}}  — the context MUST bind the exact same path as the input.
 - ALWAYS set "sendDataModel": true on createSurface when you render ANY input. Without it the input's value is never stored, the button context resolves empty, and you will receive a blank answer.
-- When you receive `[USER_ACTION] {"name":"...","context":{"answer":"..."}}`, the context already holds the driver's answer. USE IT — do NOT ask the same question again. Generate the NEXT surface: the next clarifying question, step-by-step instructions, or the final call-911 / roadside / move-to-safety action.
+- On `[USER_ACTION] {"name":"...","context":{...}}`, the context already holds the user's answer — USE IT, do not re-ask. Generate the NEXT surface.
 - A ChoicePicker with "variant":"multipleSelection" works as a mark-each-step-done checklist.
-- Keep each turn short and glanceable. Prioritize the call-911 / roadside / move-to-safety action once enough is known.
-- Adapt to available tools: only instruct actions the driver can perform with what they have; otherwise offer the appropriate assistance action. Never advise stopping in an unsafe or isolated location.
-- The driver may also send CAMERA IMAGES of the situation (a tire, smoke, a leak, a dashboard light, an injury, or their own body). When you receive an image, base your guidance on what you actually SEE — name the visible problem and give the next concrete step. If the image already answers a question you would otherwise ask (for example, you can SEE which side of the chest the driver's hand is pressed against during a heart attack, or SEE whether a tire is flat), do NOT ask that question — proceed straight to the next step. Images may arrive repeatedly as the situation changes; treat each as the current state and update your guidance. Keep outputting A2UI messages only.
 
 CORRECTNESS (the parser rejects unknown fields):
-- Every Button MUST reference a SEPARATE Text child by id, e.g. {"id":"btn1","component":"Button","child":"btn1text","variant":"primary","action":{"event":{"name":"call_911"}}} plus {"id":"btn1text","component":"Text","text":"📞 Call 911"}.
+- Every Button MUST reference a SEPARATE Text child by id, e.g. {"id":"btn1","component":"Button","child":"btn1text","variant":"primary","action":{"event":{"name":"done"}}} plus {"id":"btn1text","component":"Text","text":"Done"}.
 - Card takes a single "child" (an id), NOT "children".
 - One component MUST have id "root". Every id referenced in any children/child MUST exist as its own component in the same updateComponents array.
 - Use "variant" for Text style, never "hint".
@@ -96,7 +99,7 @@ class HudScreen extends StatefulWidget {
 }
 
 class _HudScreenState extends State<HudScreen> {
-  HudState _state = HudState.onboarding;
+  HudState _state = HudState.normal;
   String _transcript = '';
   String _errorMessage = '';
   String? _activeSurfaceId;
@@ -120,6 +123,15 @@ class _HudScreenState extends State<HudScreen> {
   // returns to the camera layout (instead of active) once the reply is sent.
   bool _returnToCamera = false;
 
+  // Voice-in is now an overlay, not a full-screen swap: while [_listening] is
+  // true the current surface stays visible and the mic captures in the
+  // background; a slim listening bar shows the live transcript on top.
+  bool _listening = false;
+
+  // Auto-scroll the generated surface to the bottom as components stream in.
+  final ScrollController _surfaceScroll = ScrollController();
+  final ScrollController _cameraScroll = ScrollController();
+
   // Voice-out: the spoken script of the last surface, used to debounce so a
   // SurfaceAdded + ComponentsUpdated for the same turn isn't spoken twice.
   String _lastSpoken = '';
@@ -137,7 +149,30 @@ class _HudScreenState extends State<HudScreen> {
   }
 
   void _initGenUI() {
-    final catalog = BasicCatalogItems.asNoAssetCatalog();
+    // Trimmed catalog: only the components the UI actually uses. The full
+    // basic catalog (+ functions) inflates the system prompt to ~77KB, which
+    // dominates time-to-first-token on any model. Dropping unused components
+    // and all client functions shrinks the prompt sharply → much faster
+    // prefill → near-instant surface. catalogId stays the basic one so the
+    // model's createSurface still validates.
+    final catalog = Catalog(
+      [
+        BasicCatalogItems.column,
+        BasicCatalogItems.row,
+        BasicCatalogItems.card,
+        BasicCatalogItems.text,
+        BasicCatalogItems.icon,
+        BasicCatalogItems.button,
+        BasicCatalogItems.choicePicker,
+        BasicCatalogItems.textField,
+        BasicCatalogItems.divider,
+        BasicCatalogItems.slider,
+        BasicCatalogItems.checkBox,
+        BasicCatalogItems.list,
+      ],
+      catalogId: basicCatalogId,
+      systemPromptFragments: [BasicCatalogItems.basicCatalogRules],
+    );
     final fullPrompt = PromptBuilder.chat(
       catalog: catalog,
       systemPromptFragments: [_systemPrompt],
@@ -156,17 +191,18 @@ class _HudScreenState extends State<HudScreen> {
       switch (event) {
         case ConversationWaiting():
           setState(() {
-            // In camera mode (or returning to it after a voice reply) keep the
-            // live layout visible and just flag "analyzing" instead of swapping
-            // to the full-screen spinner.
+            // No full-screen load screen: keep the current layout and let the
+            // surface stream its components in. In camera mode just flag
+            // "analyzing" beside the live video.
             if (_returnToCamera || _state == HudState.camera) {
               _state = HudState.camera;
               _analyzing = true;
-            } else {
-              _state = HudState.processing;
+            } else if (_state == HudState.normal) {
+              _state = HudState.active;
             }
           });
         case ConversationSurfaceAdded(:final surfaceId, :final definition):
+          _sanitizeSurface(definition);
           setState(() {
             _activeSurfaceId = surfaceId;
             _state = (_returnToCamera || _state == HudState.camera)
@@ -177,6 +213,7 @@ class _HudScreenState extends State<HudScreen> {
             _returnToCamera = false;
           });
           _speakGuide(definition);
+          _scrollSurfaceToBottom();
         // The controller emits ComponentsUpdated (not SurfaceAdded) when the
         // model re-creates an already-known surfaceId or refreshes components.
         // Without this, the 2nd+ turn would never set _activeSurfaceId and the
@@ -184,6 +221,7 @@ class _HudScreenState extends State<HudScreen> {
         // here also lets an action-triggered follow-up recover from a prior
         // turn's error.
         case ConversationComponentsUpdated(:final surfaceId, :final definition):
+          _sanitizeSurface(definition);
           setState(() {
             _activeSurfaceId = surfaceId;
             _state = (_returnToCamera || _state == HudState.camera)
@@ -194,6 +232,7 @@ class _HudScreenState extends State<HudScreen> {
             _returnToCamera = false;
           });
           _speakGuide(definition);
+          _scrollSurfaceToBottom();
         case ConversationError(:final error):
           setState(() {
             _analyzing = false;
@@ -221,6 +260,8 @@ class _HudScreenState extends State<HudScreen> {
     _camera.dispose();
     _customInput.dispose();
     _trace.dispose();
+    _surfaceScroll.dispose();
+    _cameraScroll.dispose();
     super.dispose();
   }
 
@@ -231,7 +272,9 @@ class _HudScreenState extends State<HudScreen> {
     final withTools = '$text. Tools in my car: $_toolsContext.';
     setState(() {
       _transcript = text;
-      _state = HudState.processing;
+      // Go straight to the active surface area — no load screen. Components
+      // appear inline as the model streams them in.
+      _state = HudState.active;
       _errorMessage = '';
       _activeSurfaceId = null;
       _returnToCamera = false;
@@ -239,7 +282,7 @@ class _HudScreenState extends State<HudScreen> {
 
     // Safety net: if the transport returns without adding a surface OR emitting
     // an error (e.g. empty/invalid model output), surface a clear message
-    // instead of leaving the spinner up forever.
+    // instead of leaving the inline loader up forever.
     try {
       await _conversation
           .sendRequest(ChatMessageFactories.userText(withTools))
@@ -256,7 +299,7 @@ class _HudScreenState extends State<HudScreen> {
       return;
     }
     if (!mounted) return;
-    if (_state == HudState.processing &&
+    if (_state == HudState.active &&
         _activeSurfaceId == null &&
         _errorMessage.isEmpty) {
       debugPrint('[Guardian/HUD] request completed with no surface and no '
@@ -275,38 +318,60 @@ class _HudScreenState extends State<HudScreen> {
 
   Future<void> _startListening() => _beginVoiceInput(followUp: false);
 
-  /// Starts the mic. When [followUp] is true the recognized text is sent as a
-  /// bare reply (continuing the active conversation) instead of a fresh
-  /// scenario with the tools context appended.
+  /// Starts the mic as an OVERLAY on top of the current UI (the surface is
+  /// NOT replaced). Tap again while listening to cancel. When [followUp] is
+  /// true the recognized text is sent as a bare reply (continuing the active
+  /// conversation) instead of a fresh scenario with the tools context appended.
   Future<void> _beginVoiceInput({required bool followUp}) async {
+    // Toggle off if already listening (a tap on the listening bar / button).
+    if (_listening) {
+      await _speech.stopListening();
+      if (!mounted) return;
+      setState(() {
+        _listening = false;
+        _transcript = '';
+      });
+      return;
+    }
     _tts.stop(); // don't let the HUD speak over the driver's answer
     _voiceFollowUp = followUp;
     _returnToCamera = (_state == HudState.camera);
     setState(() {
-      _state = HudState.listening;
+      _listening = true;
       _transcript = '';
     });
     await _speech.startListening(
       onResult: (t) => setState(() => _transcript = t),
       onDone: () {
         if (!mounted) return;
-        if (_transcript.isNotEmpty) {
+        final text = _transcript;
+        setState(() => _listening = false);
+        if (text.isNotEmpty) {
           if (_voiceFollowUp) {
-            _sendFollowUp(_transcript);
+            _sendFollowUp(text);
           } else {
-            _sendScenario(_transcript);
+            _sendScenario(text);
           }
         } else {
-          // Nothing recognized — return to where we were.
-          setState(() {
-            _state = _returnToCamera
-                ? HudState.camera
-                : (_activeSurfaceId != null ? HudState.active : HudState.normal);
-            _returnToCamera = false;
-          });
+          // Nothing recognized — stay where we were.
+          setState(() => _returnToCamera = false);
         }
       },
     );
+  }
+
+  /// Scrolls the active generated surface to the bottom so newly streamed
+  /// components come into view. Runs after the next frame so layout has
+  /// reflected the new component sizes.
+  void _scrollSurfaceToBottom() {
+    final c = _state == HudState.camera ? _cameraScroll : _surfaceScroll;
+    if (!c.hasClients) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (c.hasClients) {
+        c.animateTo(c.position.maxScrollExtent,
+            duration: 240.ms, curve: Curves.easeOut);
+      }
+    });
   }
 
   /// Sends a follow-up reply in an ongoing conversation (a spoken answer to a
@@ -321,7 +386,8 @@ class _HudScreenState extends State<HudScreen> {
         _state = HudState.camera;
         _analyzing = true;
       } else {
-        _state = HudState.processing;
+        // Stay on the active surface; the next surface streams in inline.
+        _state = HudState.active;
       }
       _errorMessage = '';
     });
@@ -348,8 +414,12 @@ class _HudScreenState extends State<HudScreen> {
         _analyzing = false;
         _returnToCamera = false;
       });
-    } else if (_state == HudState.processing && _errorMessage.isEmpty) {
-      setState(() => _state = HudState.active);
+    } else if (_state == HudState.active &&
+        _activeSurfaceId == null &&
+        _errorMessage.isEmpty) {
+      // Nothing streamed in; leave the inline loader — the safety net in
+      // _sendScenario covers fresh scenarios. For follow-ups the prior surface
+      // is still showing.
     }
   }
 
@@ -383,6 +453,7 @@ class _HudScreenState extends State<HudScreen> {
     setState(() {
       _state = _activeSurfaceId != null ? HudState.active : HudState.normal;
       _analyzing = false;
+      _listening = false;
     });
   }
 
@@ -465,6 +536,19 @@ class _HudScreenState extends State<HudScreen> {
 
   // ─── Voice-out (TTS) ──────────────────────────────────────────────────────
 
+  /// Defensive layout guard: a Row with `align: "stretch"` inside the
+  /// vertically-unbounded scroll view forces infinite height and crashes
+  /// performLayout. The prompt forbids it, but models occasionally emit it
+  /// anyway — rewrite any such Row to `align: "start"` before render. Column
+  /// stretch is left alone (it stretches width, which is bounded).
+  void _sanitizeSurface(SurfaceDefinition def) {
+    for (final c in def.components.values) {
+      if (c.type == 'Row' && c.properties['align'] == 'stretch') {
+        c.properties['align'] = 'start';
+      }
+    }
+  }
+
   /// Speaks the guidance from a freshly rendered surface. Debounced by
   /// [_lastSpoken] so a SurfaceAdded + ComponentsUpdated pair for the same
   /// turn isn't read twice.
@@ -521,11 +605,13 @@ class _HudScreenState extends State<HudScreen> {
 
   void _dismiss() {
     _tts.stop();
+    _speech.stopListening();
     _autoCaptureTimer?.cancel();
     _autoCaptureTimer = null;
     _camera.stop();
     setState(() {
       _state = HudState.normal;
+      _listening = false;
       _transcript = '';
       _activeSurfaceId = null;
       _errorMessage = '';
@@ -552,7 +638,9 @@ class _HudScreenState extends State<HudScreen> {
           }
           if (e is KeyDownEvent &&
               e.logicalKey == LogicalKeyboardKey.escape) {
-            if (_state == HudState.camera) {
+            if (_listening) {
+              _beginVoiceInput(followUp: _voiceFollowUp); // toggle off
+            } else if (_state == HudState.camera) {
               _closeCamera();
             } else if (_state != HudState.normal) {
               _dismiss();
@@ -561,11 +649,11 @@ class _HudScreenState extends State<HudScreen> {
         },
         child: Stack(children: [
           _mainContent(),
-          if (_state != HudState.onboarding && _state != HudState.camera) ...[
+          if (_state != HudState.camera) ...[
             _floatingDemoPanel(),
             if (_state == HudState.normal) ...[_voiceFab(), _cameraFab()],
           ],
-          if (_state == HudState.onboarding) _onboarding(),
+          if (_listening) _listeningBar(),
         ]),
       ),
     );
@@ -580,14 +668,11 @@ class _HudScreenState extends State<HudScreen> {
         transitionBuilder: (child, anim) =>
             FadeTransition(opacity: anim, child: child),
         child: switch (_state) {
-          HudState.onboarding || HudState.normal =>
-            const NormalHud(key: ValueKey('normal')),
-          HudState.listening => VoiceListeningOverlay(
-              key: const ValueKey('listening'), transcript: _transcript),
-          HudState.processing => ProcessingOverlay(
-              key: const ValueKey('processing'),
-              transcript: _transcript,
-              trace: _trace),
+          HudState.normal => NormalHud(
+              key: const ValueKey('normal'),
+              onToggleDemo: () =>
+                  setState(() => _demoPanelExpanded = !_demoPanelExpanded),
+              demoExpanded: _demoPanelExpanded),
           HudState.active => _activeView(),
           HudState.camera => _cameraMode(key: const ValueKey('camera')),
         },
@@ -595,143 +680,69 @@ class _HudScreenState extends State<HudScreen> {
     );
   }
 
-  // ─── Onboarding ──────────────────────────────────────────────────────────
-
-  Widget _onboarding() {
-    return Container(
-      color: Colors.black.withValues(alpha: 0.85),
+  /// Slim overlay shown while the mic is listening. Sits on top of the current
+  /// surface (which is NOT replaced) and shows the live transcript; tap to
+  /// cancel. The surface keeps rendering/generated UI behind it and auto-scrolls.
+  Widget _listeningBar() {
+    return Positioned(
+      top: 16,
+      left: 0,
+      right: 0,
       child: Center(
-        child: Container(
-          width: 560,
-          padding: const EdgeInsets.all(48),
-          decoration: BoxDecoration(
-            color: const Color(0xFF0D1117),
-            borderRadius: BorderRadius.circular(24),
-            border: Border.all(color: Colors.white.withValues(alpha: 0.08)),
-          ),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                children: [
-                  Container(
-                    padding: const EdgeInsets.all(12),
-                    decoration: BoxDecoration(
-                      color: const Color(0xFF00D4FF).withValues(alpha: 0.1),
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                    child: const Icon(Icons.shield, color: Color(0xFF00D4FF), size: 28),
+        child: GestureDetector(
+          onTap: () => _beginVoiceInput(followUp: _voiceFollowUp),
+          child: Container(
+            constraints: const BoxConstraints(maxWidth: 560),
+            padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 10),
+            decoration: BoxDecoration(
+              color: const Color(0xFF00D4FF).withValues(alpha: 0.18),
+              borderRadius: BorderRadius.circular(40),
+              border:
+                  Border.all(color: const Color(0xFF00D4FF).withValues(alpha: 0.5)),
+              boxShadow: [
+                BoxShadow(
+                  color: const Color(0xFF00D4FF).withValues(alpha: 0.2),
+                  blurRadius: 20,
+                )
+              ],
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(Icons.mic, color: const Color(0xFF00D4FF), size: 18)
+                    .animate(onPlay: (c) => c.repeat(reverse: true))
+                    .scaleXY(
+                        begin: 1.0,
+                        end: 1.3,
+                        duration: 700.ms,
+                        curve: Curves.easeInOut),
+                const SizedBox(width: 10),
+                ConstrainedBox(
+                  constraints: const BoxConstraints(maxWidth: 380),
+                  child: Text(
+                    _transcript.isEmpty ? 'Listening…' : _transcript,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 14,
+                        fontWeight: FontWeight.w500),
                   ),
-                  const SizedBox(width: 16),
-                  Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      const Text('Guardian HUD',
-                          style: TextStyle(
-                              color: Colors.white,
-                              fontSize: 24,
-                              fontWeight: FontWeight.w700)),
-                      Text('AI-powered emergency assistant',
-                          style: TextStyle(
-                              color: Colors.white.withValues(alpha: 0.4),
-                              fontSize: 13)),
-                    ],
-                  ),
-                ],
-              ),
-              const SizedBox(height: 32),
-              const Text('What tools do you have in your car?',
-                  style: TextStyle(
-                      color: Colors.white,
-                      fontSize: 15,
-                      fontWeight: FontWeight.w600)),
-              const SizedBox(height: 4),
-              Text('Guardian adapts its response based on what\'s available to you.',
-                  style: TextStyle(
-                      color: Colors.white.withValues(alpha: 0.4), fontSize: 12)),
-              const SizedBox(height: 16),
-              Wrap(
-                spacing: 8,
-                runSpacing: 8,
-                children: _allTools.map((t) {
-                  final selected = _selectedTools.contains(t.$2);
-                  return GestureDetector(
-                    onTap: () => setState(() {
-                      if (selected) {
-                        _selectedTools.remove(t.$2);
-                      } else {
-                        _selectedTools.add(t.$2);
-                      }
-                    }),
-                    child: AnimatedContainer(
-                      duration: 200.ms,
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 14, vertical: 8),
-                      decoration: BoxDecoration(
-                        color: selected
-                            ? const Color(0xFF00D4FF).withValues(alpha: 0.15)
-                            : Colors.white.withValues(alpha: 0.04),
-                        borderRadius: BorderRadius.circular(8),
-                        border: Border.all(
-                          color: selected
-                              ? const Color(0xFF00D4FF).withValues(alpha: 0.5)
-                              : Colors.white.withValues(alpha: 0.08),
-                        ),
-                      ),
-                      child: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Text(t.$1, style: const TextStyle(fontSize: 14)),
-                          const SizedBox(width: 6),
-                          Text(t.$2,
-                              style: TextStyle(
-                                  color: selected
-                                      ? const Color(0xFF00D4FF)
-                                      : Colors.white.withValues(alpha: 0.7),
-                                  fontSize: 13,
-                                  fontWeight: selected
-                                      ? FontWeight.w600
-                                      : FontWeight.normal)),
-                        ],
-                      ),
-                    ),
-                  );
-                }).toList(),
-              ),
-              const SizedBox(height: 32),
-              Row(
-                children: [
-                  Expanded(
-                    child: ElevatedButton(
-                      onPressed: () => setState(() => _state = HudState.normal),
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: const Color(0xFF00D4FF),
-                        foregroundColor: Colors.black,
-                        padding: const EdgeInsets.symmetric(vertical: 16),
-                        shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(12)),
-                        elevation: 0,
-                      ),
-                      child: const Text('Launch HUD',
-                          style: TextStyle(
-                              fontWeight: FontWeight.w700, fontSize: 15)),
-                    ),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 12),
-              Center(
-                child: Text(
-                  'You can update tools anytime from the side panel',
-                  style: TextStyle(
-                      color: Colors.white.withValues(alpha: 0.25), fontSize: 11),
                 ),
-              ),
-            ],
+                const SizedBox(width: 12),
+                Text('tap to cancel',
+                    style: TextStyle(
+                        color: Colors.white.withValues(alpha: 0.5),
+                        fontSize: 11,
+                        fontStyle: FontStyle.italic)),
+              ],
+            ),
           ),
-        ).animate().fadeIn(duration: 500.ms).scale(begin: const Offset(0.95, 0.95)),
-      ),
+        ),
+      )
+          .animate()
+          .fadeIn(duration: 200.ms)
+          .slideY(begin: -0.3, duration: 200.ms),
     );
   }
 
@@ -740,7 +751,13 @@ class _HudScreenState extends State<HudScreen> {
   Widget _activeView() {
     return Container(
       key: const ValueKey('active'),
-      color: const Color(0xFF070A0E),
+      decoration: const BoxDecoration(
+        gradient: RadialGradient(
+          center: Alignment.center,
+          radius: 1.2,
+          colors: [Color(0xFF0D1117), Color(0xFF070A0E)],
+        ),
+      ),
       child: Column(
         children: [
           _activeHeader(),
@@ -749,11 +766,33 @@ class _HudScreenState extends State<HudScreen> {
                 ? _errorView()
                 : _activeSurfaceId != null
                     ? _buildSurface(_activeSurfaceId!)
-                    : const Center(
-                        child: CircularProgressIndicator(
-                            color: Color(0xFF00D4FF), strokeWidth: 2)),
+                    : _inlineStreamingLoader(),
           ),
           _dismissBar(),
+        ],
+      ),
+    );
+  }
+
+  /// Quiet inline placeholder shown while the first surface streams in. No
+  /// full-screen load screen — components appear below this as they arrive.
+  Widget _inlineStreamingLoader() {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(24, 28, 24, 0),
+      child: Row(
+        children: [
+          const SizedBox(
+            width: 14,
+            height: 14,
+            child: CircularProgressIndicator(
+                color: Color(0xFF00D4FF), strokeWidth: 2),
+          ),
+          const SizedBox(width: 12),
+          Text('Generating interface…',
+              style: TextStyle(
+                  color: Colors.white.withValues(alpha: 0.5),
+                  fontSize: 13,
+                  fontWeight: FontWeight.w500)),
         ],
       ),
     );
@@ -849,9 +888,12 @@ class _HudScreenState extends State<HudScreen> {
       valueListenable: _conversation.state,
       builder: (context, state, child) {
         final ctx = _controller.contextFor(surfaceId);
+        // Keep the view pinned to the latest streamed component.
+        _scrollSurfaceToBottom();
         return Theme(
           data: _hudTheme(context),
           child: SingleChildScrollView(
+            controller: _surfaceScroll,
             padding: const EdgeInsets.fromLTRB(20, 24, 20, 32),
             child: Surface(
               surfaceContext: ctx,
@@ -878,23 +920,34 @@ class _HudScreenState extends State<HudScreen> {
               padding:
                   const EdgeInsets.symmetric(horizontal: 22, vertical: 14),
               decoration: BoxDecoration(
-                color: const Color(0xFF00D4FF).withValues(alpha: 0.12),
+                color: const Color(0xFF00D4FF)
+                    .withValues(alpha: _listening ? 0.28 : 0.12),
                 borderRadius: BorderRadius.circular(40),
                 border: Border.all(
-                    color: const Color(0xFF00D4FF).withValues(alpha: 0.4)),
+                    color: const Color(0xFF00D4FF)
+                        .withValues(alpha: _listening ? 0.7 : 0.4)),
               ),
-              child: const Row(
+              child: Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  Icon(Icons.mic, color: Color(0xFF00D4FF), size: 18),
-                  SizedBox(width: 10),
-                  Text('Speak your answer',
-                      style:
-                          TextStyle(color: Color(0xFF00D4FF), fontSize: 14)),
-                  SizedBox(width: 12),
-                  Text('· Space bar',
+                  Icon(Icons.mic, color: const Color(0xFF00D4FF), size: 18)
+                      .animate(onPlay: _listening
+                          ? (c) => c.repeat(reverse: true)
+                          : null)
+                      .scaleXY(
+                          begin: 1.0,
+                          end: 1.25,
+                          duration: 700.ms,
+                          curve: Curves.easeInOut),
+                  const SizedBox(width: 10),
+                  Text(_listening ? 'Listening…' : 'Speak your answer',
+                      style: const TextStyle(
+                          color: Color(0xFF00D4FF), fontSize: 14)),
+                  const SizedBox(width: 12),
+                  Text(_listening ? 'tap to cancel' : '· Space bar',
                       style: TextStyle(
-                          color: Color(0xFF00D4FF),
+                          color: const Color(0xFF00D4FF)
+                              .withValues(alpha: 0.7),
                           fontSize: 12,
                           fontStyle: FontStyle.italic)),
                 ],
@@ -1043,20 +1096,29 @@ class _HudScreenState extends State<HudScreen> {
                 )
               ],
             ),
-            child: const Row(
+            child: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
-                Icon(Icons.mic, color: Color(0xFF00D4FF), size: 18),
-                SizedBox(width: 10),
-                Text('Tap to speak',
-                    style: TextStyle(color: Color(0xFF00D4FF), fontSize: 14)),
-                SizedBox(width: 14),
+                Icon(Icons.mic, color: const Color(0xFF00D4FF), size: 18)
+                    .animate(onPlay: _listening
+                        ? (c) => c.repeat(reverse: true)
+                        : null)
+                    .scaleXY(
+                        begin: 1.0,
+                        end: 1.3,
+                        duration: 700.ms,
+                        curve: Curves.easeInOut),
+                const SizedBox(width: 10),
+                Text(_listening ? 'Listening…' : 'Tap to speak',
+                    style:
+                        const TextStyle(color: Color(0xFF00D4FF), fontSize: 14)),
+                const SizedBox(width: 14),
                 Text('·',
-                    style: TextStyle(
+                    style: const TextStyle(
                         color: Color(0xFF00D4FF), fontSize: 14)),
-                SizedBox(width: 14),
-                Text('Space bar',
-                    style: TextStyle(
+                const SizedBox(width: 14),
+                Text(_listening ? 'tap to cancel' : 'Space bar',
+                    style: const TextStyle(
                         color: Color(0xFF00D4FF),
                         fontSize: 12,
                         fontStyle: FontStyle.italic)),
@@ -1248,6 +1310,7 @@ class _HudScreenState extends State<HudScreen> {
             Theme(
               data: _hudTheme(context),
               child: SingleChildScrollView(
+                controller: _cameraScroll,
                 padding: const EdgeInsets.fromLTRB(20, 20, 20, 56),
                 child: Surface(
                   surfaceContext: _controller.contextFor(_activeSurfaceId!),
@@ -1314,25 +1377,36 @@ class _HudScreenState extends State<HudScreen> {
               padding:
                   const EdgeInsets.symmetric(horizontal: 22, vertical: 16),
               decoration: BoxDecoration(
-                color: const Color(0xFF00D4FF).withValues(alpha: 0.12),
+                color: const Color(0xFF00D4FF)
+                    .withValues(alpha: _listening ? 0.28 : 0.12),
                 borderRadius: BorderRadius.circular(40),
                 border: Border.all(
-                    color: const Color(0xFF00D4FF).withValues(alpha: 0.4)),
+                    color: const Color(0xFF00D4FF)
+                        .withValues(alpha: _listening ? 0.7 : 0.4)),
               ),
-              child: const Row(
+              child: Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  Icon(Icons.mic, color: Color(0xFF00D4FF), size: 18),
-                  SizedBox(width: 10),
-                  Text('Speak',
-                      style: TextStyle(
+                  Icon(Icons.mic, color: const Color(0xFF00D4FF), size: 18)
+                      .animate(onPlay: _listening
+                          ? (c) => c.repeat(reverse: true)
+                          : null)
+                      .scaleXY(
+                          begin: 1.0,
+                          end: 1.3,
+                          duration: 700.ms,
+                          curve: Curves.easeInOut),
+                  const SizedBox(width: 10),
+                  Text(_listening ? 'Listening…' : 'Speak',
+                      style: const TextStyle(
                           color: Color(0xFF00D4FF),
                           fontSize: 16,
                           fontWeight: FontWeight.w700)),
-                  SizedBox(width: 10),
-                  Text('· Space',
+                  const SizedBox(width: 10),
+                  Text(_listening ? 'tap to cancel' : '· Space',
                       style: TextStyle(
-                          color: Color(0xFF00D4FF),
+                          color: const Color(0xFF00D4FF)
+                              .withValues(alpha: 0.7),
                           fontSize: 12,
                           fontStyle: FontStyle.italic)),
                 ],
@@ -1348,6 +1422,18 @@ class _HudScreenState extends State<HudScreen> {
   // ─── Demo panel ───────────────────────────────────────────────────────────
 
   Widget _floatingDemoPanel() {
+    // On the home screen the toggle lives in the top bar (left, next to the
+    // time), so here we only render the expanded panel, dropped just below that
+    // top bar on the left. In the active surface state there's no top-bar
+    // toggle, so we render the floating toggle + panel on the top-right.
+    if (_state == HudState.normal) {
+      if (!_demoPanelExpanded) return const SizedBox.shrink();
+      return Positioned(
+        top: 84,
+        left: 28,
+        child: _panel(),
+      );
+    }
     return Positioned(
       top: 16,
       right: 16,
@@ -1599,96 +1685,103 @@ class _HudScreenState extends State<HudScreen> {
 
   // ─── Theme ────────────────────────────────────────────────────────────────
 
+  // Native macOS dark-mode aesthetic for the generated surface: system-blue
+  // accent, translucent rounded cards, 8px corners, SF-style tight typography,
+  // quiet dividers — like a Mac app, not a neon car HUD.
+  // Generated-surface theme matched to the home HUD: dark translucent cards,
+  // cyan (#00D4FF) accent, green secondary — same palette as NormalHud.
   ThemeData _hudTheme(BuildContext context) {
+    const accent = Color(0xFF00D4FF);
+    const green = Color(0xFF00FF88);
+    const red = Color(0xFFFF2D2D);
+    const cardBg = Color(0xFF121821);
     return Theme.of(context).copyWith(
       colorScheme: const ColorScheme.dark(
-        primary: Color(0xFF00D4FF),
-        secondary: Color(0xFF00FF88),
-        error: Color(0xFFFF2D2D),
-        // Card renders with colorScheme.surface, so this must contrast with the
-        // 0xFF070A0E page background or cards vanish into it.
-        surface: Color(0xFF121821),
+        primary: accent,
+        onPrimary: Colors.black,
+        secondary: green,
+        error: red,
+        surface: cardBg,
+        onSurface: Colors.white,
       ),
       cardTheme: CardThemeData(
-        color: const Color(0xFF121821),
+        color: cardBg,
         elevation: 0,
-        // No gap between stacked cards — the driver sees one continuous
-        // chunky panel, not a airy phone-style list.
         margin: EdgeInsets.zero,
         shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(20),
+          borderRadius: BorderRadius.circular(14),
           side: BorderSide(color: Colors.white.withValues(alpha: 0.08)),
         ),
       ),
       elevatedButtonTheme: ElevatedButtonThemeData(
         style: ElevatedButton.styleFrom(
-          backgroundColor: const Color(0xFFFF2D2D),
-          foregroundColor: Colors.white,
-          minimumSize: const Size.fromHeight(72),
-          padding: const EdgeInsets.symmetric(horizontal: 36, vertical: 22),
+          backgroundColor: accent,
+          foregroundColor: Colors.black,
+          // Finite min width so buttons can sit inside a Row without forcing
+          // infinite width (Size.fromHeight uses width=∞ and explodes in a Row).
+          minimumSize: const Size(96, 48),
+          padding: const EdgeInsets.symmetric(horizontal: 22, vertical: 12),
           shape:
-              RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+              RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
           elevation: 0,
-          textStyle: const TextStyle(fontWeight: FontWeight.w800, fontSize: 20),
+          textStyle: const TextStyle(fontWeight: FontWeight.w700, fontSize: 16),
         ),
       ),
       textButtonTheme: TextButtonThemeData(
         style: TextButton.styleFrom(
-          foregroundColor: const Color(0xFF00D4FF),
-          minimumSize: const Size.fromHeight(64),
-          padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 18),
+          foregroundColor: accent,
+          minimumSize: const Size(80, 44),
+          padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 10),
           shape:
-              RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
-          textStyle: const TextStyle(fontWeight: FontWeight.w700, fontSize: 18),
+              RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+          textStyle: const TextStyle(fontWeight: FontWeight.w600, fontSize: 15),
         ),
       ),
       chipTheme: ChipThemeData(
         labelStyle: const TextStyle(
-            color: Colors.white, fontSize: 15, fontWeight: FontWeight.w600),
+            color: Colors.white, fontSize: 14, fontWeight: FontWeight.w600),
         secondaryLabelStyle: const TextStyle(
-            color: Color(0xFF00D4FF), fontSize: 15, fontWeight: FontWeight.w700),
+            color: accent, fontSize: 14, fontWeight: FontWeight.w700),
         labelPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 2),
         padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-        // Neat uniform pills — same size, clean wrap, no checkmark clutter.
         shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(24),
+          borderRadius: BorderRadius.circular(20),
           side: BorderSide(color: Colors.white.withValues(alpha: 0.12)),
         ),
         backgroundColor: Colors.white.withValues(alpha: 0.04),
-        selectedColor: const Color(0xFF00D4FF).withValues(alpha: 0.16),
+        selectedColor: accent.withValues(alpha: 0.18),
         showCheckmark: false,
       ),
       dividerTheme: DividerThemeData(
         color: Colors.white.withValues(alpha: 0.08),
-        thickness: 1.5,
-        space: 8,
+        thickness: 1,
+        space: 10,
       ),
       textTheme: TextTheme(
         headlineLarge: const TextStyle(
             color: Colors.white,
-            fontSize: 38,
+            fontSize: 30,
             fontWeight: FontWeight.w800,
-            letterSpacing: 1,
+            letterSpacing: 0.5,
             height: 1.15),
         headlineMedium: TextStyle(
             color: Colors.white.withValues(alpha: 0.5),
-            fontSize: 13,
+            fontSize: 12,
             fontWeight: FontWeight.w700,
             letterSpacing: 2),
         headlineSmall: const TextStyle(
             color: Colors.white,
-            fontSize: 22,
+            fontSize: 20,
             fontWeight: FontWeight.w700),
         bodyLarge: const TextStyle(
-            color: Colors.white, fontSize: 18, height: 1.45),
+            color: Colors.white, fontSize: 16, height: 1.4),
         bodyMedium: TextStyle(
-            color: Colors.white.withValues(alpha: 0.65),
-            fontSize: 16,
+            color: Colors.white.withValues(alpha: 0.7),
+            fontSize: 15,
             height: 1.4),
         bodySmall: TextStyle(
-            color: Colors.white.withValues(alpha: 0.4),
-            fontSize: 14,
-            fontStyle: FontStyle.italic),
+            color: Colors.white.withValues(alpha: 0.45),
+            fontSize: 13),
       ),
     );
   }

@@ -4,7 +4,9 @@ import 'package:flutter/material.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 
 class NormalHud extends StatefulWidget {
-  const NormalHud({super.key});
+  final VoidCallback? onToggleDemo;
+  final bool demoExpanded;
+  const NormalHud({super.key, this.onToggleDemo, this.demoExpanded = false});
 
   @override
   State<NormalHud> createState() => _NormalHudState();
@@ -94,10 +96,66 @@ class _NormalHudState extends State<NormalHud>
       padding: const EdgeInsets.symmetric(horizontal: 40, vertical: 20),
       child: Row(
         children: [
-          _navCard().animate().fadeIn(duration: 600.ms).slideX(begin: -0.1),
+          // Left: time + demo scenarios button.
+          _timeAndDemo().animate().fadeIn(duration: 600.ms).slideX(begin: -0.1),
           const Spacer(),
-          _statusCluster().animate().fadeIn(duration: 600.ms, delay: 100.ms),
+          // Right: nav card + status pills (wifi, temp).
+          _navCard().animate().fadeIn(duration: 600.ms, delay: 60.ms),
+          const SizedBox(width: 12),
+          _statusPills().animate().fadeIn(duration: 600.ms, delay: 100.ms),
         ],
+      ),
+    );
+  }
+
+  Widget _timeAndDemo() {
+    return Row(
+      children: [
+        Text(
+          _time,
+          style: const TextStyle(
+            color: Colors.white,
+            fontSize: 20,
+            fontWeight: FontWeight.w300,
+            letterSpacing: 1.5,
+          ),
+        ),
+        const SizedBox(width: 16),
+        if (widget.onToggleDemo != null) _demoButton(),
+      ],
+    );
+  }
+
+  Widget _demoButton() {
+    return GestureDetector(
+      onTap: widget.onToggleDemo,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+        decoration: BoxDecoration(
+          color: const Color(0xFFFFCC00).withValues(alpha: 0.1),
+          borderRadius: BorderRadius.circular(20),
+          border:
+              Border.all(color: const Color(0xFFFFCC00).withValues(alpha: 0.4)),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(Icons.warning_amber_rounded,
+                color: Color(0xFFFFCC00), size: 14),
+            const SizedBox(width: 6),
+            const Text('Demo Scenarios',
+                style: TextStyle(
+                    color: Colors.white,
+                    fontSize: 12,
+                    fontWeight: FontWeight.w600)),
+            const SizedBox(width: 6),
+            Icon(
+              widget.demoExpanded ? Icons.expand_less : Icons.expand_more,
+              color: Colors.white54,
+              size: 16,
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -142,22 +200,12 @@ class _NormalHudState extends State<NormalHud>
     );
   }
 
-  Widget _statusCluster() {
+  Widget _statusPills() {
     return Row(
       children: [
         _statusPill(Icons.wifi, '4G', const Color(0xFF00FF88)),
         const SizedBox(width: 10),
         _statusPill(Icons.thermostat, '68°F', Colors.white54),
-        const SizedBox(width: 16),
-        Text(
-          _time,
-          style: const TextStyle(
-            color: Colors.white,
-            fontSize: 20,
-            fontWeight: FontWeight.w300,
-            letterSpacing: 1.5,
-          ),
-        ),
       ],
     );
   }

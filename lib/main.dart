@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'screens/hud_screen.dart';
+import 'widgets/ipad_frame.dart';
 
 Future<void> main() async {
   // Load .env (FIREWORKS_API_KEY, optional FIREWORKS_MODEL /
@@ -26,7 +27,7 @@ class GuardianHudApp extends StatelessWidget {
           surface: Color(0xFF0D1117),
         ),
       ),
-      home: const HudScreen(),
+      home: const IpadFrame(child: HudScreen()),
     );
   }
 }

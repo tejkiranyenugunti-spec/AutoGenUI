@@ -17,8 +17,13 @@ String get _apiKey {
 String get _model {
   const defined = String.fromEnvironment('FIREWORKS_MODEL');
   if (defined.isNotEmpty) return defined;
+  // Default model. Must be one deployed on your Fireworks account — a model
+  // id that 404s means it isn't deployed/subscribed there. deepseek-v4-pro is
+  // known to work on this account; with the trimmed catalog it's faster than
+  // the original 77KB-prompt run. For a faster model, deploy one on Fireworks
+  // and set FIREWORKS_MODEL (e.g. a small instruct model you have access to).
   return dotenv.maybeGet('FIREWORKS_MODEL') ??
-      'accounts/fireworks/models/glm-5p2';
+      'accounts/fireworks/models/deepseek-v4-pro';
 }
 
 // Vision model used when a turn carries a camera image. If the default 404s on
@@ -186,6 +191,10 @@ Conversation buildConversation({
           'frequency_penalty': 0,
           'temperature': _temperature,
           'stream': true,
+          // NOTE: this endpoint rejects non-standard fields (HTTP 400
+          // "Extra inputs are not permitted"), so GLM-5.x thinking cannot be
+          // disabled via chat_template_kwargs here. For instant output, use a
+          // non-reasoning model (see _model default / FIREWORKS_MODEL env).
         };
         request.body = jsonEncode(bodyMap);
         // Pretty-printed copy for human reading in the UI. The system prompt is
@@ -279,6 +288,15 @@ Conversation buildConversation({
               throw http.ClientException(trace.error);
             }
             final delta = json['choices']?[0]?['delta']?['content'] as String?;
+            // Reasoning models (GLM-5.x / Qwen3) stream chain-of-thought in a
+            // separate `reasoning_content` field. We must NOT feed it to the
+            // A2UI parser (it isn't JSON) — but we surface it in the trace so a
+            // slow turn is diagnosable instead of looking like a frozen UI.
+            final reasoning =
+                json['choices']?[0]?['delta']?['reasoning_content'] as String?;
+            if (reasoning != null && reasoning.isNotEmpty) {
+              trace.appendLog('thinking… (${reasoning.length} chars)');
+            }
             if (delta != null && delta.isNotEmpty) {
               fullContent.write(delta);
               trace.content = fullContent.toString();
