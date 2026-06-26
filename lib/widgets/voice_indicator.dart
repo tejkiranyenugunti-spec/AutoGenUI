@@ -2,6 +2,8 @@ import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 
+import '../services/fireworks_transport.dart';
+
 class VoiceListeningOverlay extends StatefulWidget {
   final String transcript;
   const VoiceListeningOverlay({super.key, required this.transcript});
@@ -175,7 +177,8 @@ class _VoiceListeningOverlayState extends State<VoiceListeningOverlay>
 
 class ProcessingOverlay extends StatelessWidget {
   final String transcript;
-  const ProcessingOverlay({super.key, required this.transcript});
+  final FireworksTrace? trace;
+  const ProcessingOverlay({super.key, required this.transcript, this.trace});
 
   @override
   Widget build(BuildContext context) {
@@ -230,7 +233,58 @@ class ProcessingOverlay extends StatelessWidget {
               letterSpacing: 1,
             ),
           ),
+          if (trace != null) ...[
+            const SizedBox(height: 28),
+            _liveTrace(trace!),
+          ],
         ],
+      ),
+    );
+  }
+
+  Widget _liveTrace(FireworksTrace trace) {
+    return ConstrainedBox(
+      constraints: const BoxConstraints(maxWidth: 760),
+      child: Container(
+        width: double.infinity,
+        constraints: const BoxConstraints(maxHeight: 220),
+        padding: const EdgeInsets.all(14),
+        decoration: BoxDecoration(
+          color: Colors.black.withValues(alpha: 0.4),
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(color: Colors.white.withValues(alpha: 0.08)),
+        ),
+        child: ValueListenableBuilder<String>(
+          valueListenable: trace.liveContent,
+          builder: (context, content, _) {
+            return SingleChildScrollView(
+              reverse: true,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('LIVE RESPONSE  ·  ${trace.statusLine}',
+                      style: TextStyle(
+                          color: Colors.white.withValues(alpha: 0.3),
+                          fontSize: 10,
+                          letterSpacing: 2,
+                          fontWeight: FontWeight.w600)),
+                  const SizedBox(height: 8),
+                  SelectableText(
+                    content.isEmpty
+                        ? 'Waiting for model output…'
+                        : content,
+                    style: const TextStyle(
+                      color: Colors.white70,
+                      fontSize: 12,
+                      fontFamily: 'monospace',
+                      height: 1.5,
+                    ),
+                  ),
+                ],
+              ),
+            );
+          },
+        ),
       ),
     );
   }

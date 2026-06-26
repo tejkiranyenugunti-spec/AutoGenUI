@@ -14,63 +14,34 @@ enum HudState { onboarding, normal, listening, processing, active }
 // System prompt — detailed genui instructions for rich dark HUD UI
 // ---------------------------------------------------------------------------
 const _systemPrompt = '''
-You are Guardian AI — an emergency safety assistant embedded in a dark automotive HUD.
-When a driver reports an emergency, generate a rich safety response UI using the widget catalog.
+You are Guardian AI — an emergency safety assistant embedded in a dark automotive HUD for drivers.
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-DESIGN SYSTEM (always apply)
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-- Dark HUD aesthetic: white text on near-black background
-- Use Text with hint "h1" for emergency type headline (ALL CAPS, include emoji)
-- Use Text with hint "h2" for section labels like "STEPS" or "ACTIONS"
-- Use Text with hint "h3" for step titles
-- Use Text with hint "body" for step descriptions (keep short — 1 sentence max)
-- Use Text with hint "caption" for advisory/context notes
-- Group steps in a Row of Card widgets (max 5 cards)
-- Group action buttons in a Row
+The framework gives you the full A2UI component schema and message protocol (createSurface + updateComponents, fenced ```json blocks, a unique surfaceId per response, a root component, each component's required properties). Use it directly. Output ONLY the A2UI messages — no plan, no reasoning, no preamble, no restating the input. Generate the surface immediately.
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-EMERGENCY RESPONSE STRUCTURE (always follow)
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Root Column must contain:
-1. Emergency headline Text (h1) — e.g. "🚨 TIRE BLOWOUT"
-2. Divider
-3. "STEPS" label Text (h2)
-4. Row of step Cards (3–5 cards), each Card containing:
-   - Step number + emoji Text (h3)
-   - Step title Text (h3)
-   - Description Text (body)
-5. Divider
-6. "ACTIONS" label Text (h2)
-7. Row of Buttons
-8. Advisory Text (caption) — tool-aware context
+DRIVING-FIRST DESIGN — the driver cannot look at or tap small targets.
+- NEVER use Tabs. The driver cannot switch tabs while driving. Present everything as ONE linear, glanceable, scrollable flow.
+- GO BIG. This is a car HUD, not a phone form: large text, fat buttons, chunky chips, full-width cards that stack edge-to-edge with little/no gap between them. The driver is glancing, not reading — every tap target must be oversized.
+- Build a real visual interface, never a word dump: use Card as a padded container to GROUP related content (Icon + title + sub-items in one Card), Icon for visual cues (warning, call, locationOn, error, lock, lockOpen, info, refresh), Divider to separate sections, Row/Column with justify ("center","spaceBetween") and align ("center","stretch") for deliberate spacing.
+- HIERARCHY with Text variants: one h1 headline with an Icon beside it, h2 section headers, h3 item titles, caption notes, body one-liners. Keep each Text ~6 words.
+- Make the single most important action a "primary" Button; secondary actions "borderless" Buttons; use "spaceBetween" so they aren't crammed together.
+- Adapt structure and density to the situation; do not reuse a fixed template.
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-TOOL AWARENESS (critical — adapt every response)
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-- Spare tire + jack mentioned → full 5-step tire change sequence
-- No spare / no tools → skip tire change, show "Call Roadside" button prominently
-- Jumper cables mentioned → include jump-start steps
-- Medical emergency → "📞 Call 911" must be first Button
-- Being followed → never suggest stopping at isolated locations
+TWO-WAY CONVERSATION — use interactivity ONLY when you genuinely need info from the driver that changes the plan. If the emergency and available tools already tell you what to do, SKIP questions and go straight to instructions + actions. Never collect an input and then stop, and NEVER re-ask something the driver already answered.
+- When you DO need info (symptoms, who's hurt, location, ability to move), ask ONE question at a time. Use a ChoicePicker ("displayStyle":"chips","variant":"mutuallyExclusive") for fixed options, or a TextField for free text like a location. Give the input a data path and use that SAME path in the submit button:
+  - ChoicePicker: {"id":"picker","component":"ChoicePicker","path":"answer","displayStyle":"chips","variant":"mutuallyExclusive","options":[{"value":"yes","label":"Yes"},{"value":"no","label":"No"}]}
+  - TextField:   {"id":"loc","component":"TextField","variant":"shortText","value":{"path":"answer"},"label":"Where are you?"}
+  - Submit Button: {"id":"submit","component":"Button","child":"submitText","variant":"primary","action":{"event":{"name":"answer_submitted","context":{"answer":{"path":"answer"}}}}}  — the context MUST bind the exact same path as the input.
+- ALWAYS set "sendDataModel": true on createSurface when you render ANY input. Without it the input's value is never stored, the button context resolves empty, and you will receive a blank answer.
+- When you receive `[USER_ACTION] {"name":"...","context":{"answer":"..."}}`, the context already holds the driver's answer. USE IT — do NOT ask the same question again. Generate the NEXT surface: the next clarifying question, step-by-step instructions, or the final call-911 / roadside / move-to-safety action.
+- A ChoicePicker with "variant":"multipleSelection" works as a mark-each-step-done checklist.
+- Keep each turn short and glanceable. Prioritize the call-911 / roadside / move-to-safety action once enough is known.
+- Adapt to available tools: only instruct actions the driver can perform with what they have; otherwise offer the appropriate assistance action. Never advise stopping in an unsafe or isolated location.
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-EMERGENCY-SPECIFIC PATTERNS
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-TIRE BLOWOUT (with spare): Grip wheel → Slow down → Pull over → Hazard lights → Change tire
-TIRE BLOWOUT (no spare): Grip wheel → Slow down → Pull over → Hazard lights → Call roadside
-MEDICAL: Pull over safely → Call 911 → Stay calm → Unlock doors → Describe symptoms
-BEING FOLLOWED: Don't stop → Drive to police station → Call 911 → Keep moving → Lock doors
-FLOODED ROAD: Don't enter → Turn around → Find alternate route → Call 511
-ENGINE FAILURE: Don't panic → Coast to shoulder → Hazard lights → Call roadside
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-BUTTON ACTIONS (always use for the action Row)
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Button action must be one of: "submit", "navigate"
-Use label to indicate what happens: "📞 Call 911", "🔧 Call Roadside Assist", "🗺 Get Directions"
-
-IMPORTANT: Keep all text SHORT. The driver is stressed. Max 6 words per description.
+CORRECTNESS (the parser rejects unknown fields):
+- Every Button MUST reference a SEPARATE Text child by id, e.g. {"id":"btn1","component":"Button","child":"btn1text","variant":"primary","action":{"event":{"name":"call_911"}}} plus {"id":"btn1text","component":"Text","text":"📞 Call 911"}.
+- Card takes a single "child" (an id), NOT "children".
+- One component MUST have id "root". Every id referenced in any children/child MUST exist as its own component in the same updateComponents array.
+- Use "variant" for Text style, never "hint".
 ''';
 
 // ---------------------------------------------------------------------------
@@ -127,6 +98,7 @@ class _HudScreenState extends State<HudScreen> {
   late final Conversation _conversation;
   late final SpeechService _speech;
   final TextEditingController _customInput = TextEditingController();
+  final FireworksTrace _trace = FireworksTrace();
   bool _demoPanelExpanded = true;
 
   @override
@@ -138,9 +110,7 @@ class _HudScreenState extends State<HudScreen> {
   }
 
   void _initGenUI() {
-    final catalog = BasicCatalogItems.asNoAssetCatalog(
-      systemPromptFragments: [_systemPrompt],
-    );
+    final catalog = BasicCatalogItems.asNoAssetCatalog();
     final fullPrompt = PromptBuilder.chat(
       catalog: catalog,
       systemPromptFragments: [_systemPrompt],
@@ -150,9 +120,11 @@ class _HudScreenState extends State<HudScreen> {
     _conversation = buildConversation(
       controller: _controller,
       systemPrompt: fullPrompt,
+      trace: _trace,
     );
 
     _conversation.events.listen((event) {
+      debugPrint('[Guardian/HUD] conversation event: ${event.runtimeType}');
       if (!mounted) return;
       switch (event) {
         case ConversationWaiting():
@@ -161,6 +133,19 @@ class _HudScreenState extends State<HudScreen> {
           setState(() {
             _activeSurfaceId = surfaceId;
             _state = HudState.active;
+            _errorMessage = '';
+          });
+        // The controller emits ComponentsUpdated (not SurfaceAdded) when the
+        // model re-creates an already-known surfaceId or refreshes components.
+        // Without this, the 2nd+ turn would never set _activeSurfaceId and the
+        // safety-net would wrongly show the error view. Clearing _errorMessage
+        // here also lets an action-triggered follow-up recover from a prior
+        // turn's error.
+        case ConversationComponentsUpdated(:final surfaceId):
+          setState(() {
+            _activeSurfaceId = surfaceId;
+            _state = HudState.active;
+            _errorMessage = '';
           });
         case ConversationError(:final error):
           setState(() {
@@ -179,6 +164,7 @@ class _HudScreenState extends State<HudScreen> {
     _controller.dispose();
     _speech.dispose();
     _customInput.dispose();
+    _trace.dispose();
     super.dispose();
   }
 
@@ -193,7 +179,41 @@ class _HudScreenState extends State<HudScreen> {
       _errorMessage = '';
       _activeSurfaceId = null;
     });
-    await _conversation.sendRequest(ChatMessageFactories.userText(withTools));
+
+    // Safety net: if the transport returns without adding a surface OR emitting
+    // an error (e.g. empty/invalid model output), surface a clear message
+    // instead of leaving the spinner up forever.
+    try {
+      await _conversation
+          .sendRequest(ChatMessageFactories.userText(withTools))
+          .timeout(const Duration(seconds: 90));
+    } catch (e) {
+      // ConversationError is emitted separately by the engine for transport
+      // failures; this catches anything that escaped (e.g. a timeout).
+      debugPrint('[Guardian/HUD] sendRequest threw: $e');
+      if (!mounted) return;
+      setState(() {
+        _state = HudState.active;
+        _errorMessage = e.toString();
+      });
+      return;
+    }
+    if (!mounted) return;
+    if (_state == HudState.processing &&
+        _activeSurfaceId == null &&
+        _errorMessage.isEmpty) {
+      debugPrint('[Guardian/HUD] request completed with no surface and no '
+          'error — falling back to error view.');
+      setState(() {
+        _state = HudState.active;
+        _errorMessage = _trace.content.isNotEmpty
+            ? 'The AI returned no renderable interface. The model output did '
+                'not contain a valid A2UI createSurface/updateComponents '
+                'message — see the response below.'
+            : 'The AI returned no interface and no response content. '
+                'See the request/response details below.';
+      });
+    }
   }
 
   Future<void> _startListening() async {
@@ -249,21 +269,25 @@ class _HudScreenState extends State<HudScreen> {
   }
 
   Widget _mainContent() {
-    return AnimatedSwitcher(
-      duration: 600.ms,
-      switchInCurve: Curves.easeOutCubic,
-      switchOutCurve: Curves.easeInCubic,
-      transitionBuilder: (child, anim) =>
-          FadeTransition(opacity: anim, child: child),
-      child: switch (_state) {
-        HudState.onboarding || HudState.normal =>
-          const NormalHud(key: ValueKey('normal')),
-        HudState.listening => VoiceListeningOverlay(
-            key: const ValueKey('listening'), transcript: _transcript),
-        HudState.processing => ProcessingOverlay(
-            key: const ValueKey('processing'), transcript: _transcript),
-        HudState.active => _activeView(),
-      },
+    return SizedBox.expand(
+      child: AnimatedSwitcher(
+        duration: 600.ms,
+        switchInCurve: Curves.easeOutCubic,
+        switchOutCurve: Curves.easeInCubic,
+        transitionBuilder: (child, anim) =>
+            FadeTransition(opacity: anim, child: child),
+        child: switch (_state) {
+          HudState.onboarding || HudState.normal =>
+            const NormalHud(key: ValueKey('normal')),
+          HudState.listening => VoiceListeningOverlay(
+              key: const ValueKey('listening'), transcript: _transcript),
+          HudState.processing => ProcessingOverlay(
+              key: const ValueKey('processing'),
+              transcript: _transcript,
+              trace: _trace),
+          HudState.active => _activeView(),
+        },
+      ),
     );
   }
 
@@ -495,7 +519,7 @@ class _HudScreenState extends State<HudScreen> {
         return Theme(
           data: _hudTheme(context),
           child: SingleChildScrollView(
-            padding: const EdgeInsets.all(28),
+            padding: const EdgeInsets.fromLTRB(20, 24, 20, 32),
             child: Surface(
               surfaceContext: ctx,
               defaultBuilder: (_) => const Center(
@@ -535,52 +559,105 @@ class _HudScreenState extends State<HudScreen> {
   }
 
   Widget _errorView() {
-    return Padding(
-      padding: const EdgeInsets.all(40),
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-            decoration: BoxDecoration(
-              color: const Color(0xFFFF2D2D).withValues(alpha: 0.1),
-              borderRadius: BorderRadius.circular(6),
-            ),
-            child: const Text('AI ERROR',
-                style: TextStyle(
-                    color: Color(0xFFFF2D2D), fontSize: 11, letterSpacing: 2)),
-          ),
-          const SizedBox(height: 16),
-          SelectableText(_errorMessage,
-              style: const TextStyle(
-                  color: Colors.white70,
-                  fontSize: 13,
-                  fontFamily: 'monospace',
-                  height: 1.6)),
-          const SizedBox(height: 24),
-          Row(
+    return SingleChildScrollView(
+      padding: const EdgeInsets.fromLTRB(40, 32, 40, 24),
+      child: Center(
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 820),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              ElevatedButton.icon(
-                onPressed: () => _sendScenario(_transcript),
-                icon: const Icon(Icons.refresh, size: 16),
-                label: const Text('Retry'),
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: const Color(0xFF00D4FF),
-                  foregroundColor: Colors.black,
-                  elevation: 0,
+              Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFFF2D2D).withValues(alpha: 0.1),
+                  borderRadius: BorderRadius.circular(6),
                 ),
+                child: const Text('AI ERROR',
+                    style: TextStyle(
+                        color: Color(0xFFFF2D2D),
+                        fontSize: 11,
+                        letterSpacing: 2)),
               ),
-              const SizedBox(width: 12),
-              TextButton(
-                onPressed: _dismiss,
-                child: const Text('Back to HUD',
-                    style: TextStyle(color: Colors.white38)),
+              const SizedBox(height: 16),
+              SelectableText(_errorMessage,
+                  style: const TextStyle(
+                      color: Colors.white70,
+                      fontSize: 13,
+                      fontFamily: 'monospace',
+                      height: 1.6)),
+              const SizedBox(height: 28),
+              _traceSection('REQUEST', _trace.requestBody),
+              const SizedBox(height: 20),
+              _traceSection(
+                  'RESPONSE  ·  ${_trace.statusLine.isNotEmpty ? _trace.statusLine : "(no response)"}',
+                  _trace.content),
+              if (_trace.liveLog.value.isNotEmpty) ...[
+                const SizedBox(height: 20),
+                _traceSection('STREAM LOG', _trace.liveLog.value),
+              ],
+              const SizedBox(height: 28),
+              Row(
+                children: [
+                  ElevatedButton.icon(
+                    onPressed: () => _sendScenario(_transcript),
+                    icon: const Icon(Icons.refresh, size: 16),
+                    label: const Text('Retry'),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: const Color(0xFF00D4FF),
+                      foregroundColor: Colors.black,
+                      elevation: 0,
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  TextButton(
+                    onPressed: _dismiss,
+                    child: const Text('Back to HUD',
+                        style: TextStyle(color: Colors.white38)),
+                  ),
+                ],
               ),
             ],
           ),
-        ],
+        ),
       ),
+    );
+  }
+
+  Widget _traceSection(String title, String body) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(title,
+            style: TextStyle(
+                color: Colors.white.withValues(alpha: 0.3),
+                fontSize: 10,
+                letterSpacing: 2,
+                fontWeight: FontWeight.w600)),
+        const SizedBox(height: 8),
+        Container(
+          width: double.infinity,
+          constraints: const BoxConstraints(maxHeight: 260),
+          padding: const EdgeInsets.all(14),
+          decoration: BoxDecoration(
+            color: Colors.black.withValues(alpha: 0.4),
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(color: Colors.white.withValues(alpha: 0.08)),
+          ),
+          child: SingleChildScrollView(
+            child: SelectableText(
+              body.isEmpty ? '(empty)' : body,
+              style: const TextStyle(
+                color: Colors.white70,
+                fontSize: 12,
+                fontFamily: 'monospace',
+                height: 1.5,
+              ),
+            ),
+          ),
+        ),
+      ],
     );
   }
 
@@ -899,14 +976,18 @@ class _HudScreenState extends State<HudScreen> {
         primary: Color(0xFF00D4FF),
         secondary: Color(0xFF00FF88),
         error: Color(0xFFFF2D2D),
-        surface: Color(0xFF0D1117),
+        // Card renders with colorScheme.surface, so this must contrast with the
+        // 0xFF070A0E page background or cards vanish into it.
+        surface: Color(0xFF121821),
       ),
       cardTheme: CardThemeData(
-        color: Colors.white.withValues(alpha: 0.05),
+        color: const Color(0xFF121821),
         elevation: 0,
-        margin: const EdgeInsets.all(6),
+        // No gap between stacked cards — the driver sees one continuous
+        // chunky panel, not a airy phone-style list.
+        margin: EdgeInsets.zero,
         shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(14),
+          borderRadius: BorderRadius.circular(20),
           side: BorderSide(color: Colors.white.withValues(alpha: 0.08)),
         ),
       ),
@@ -914,43 +995,63 @@ class _HudScreenState extends State<HudScreen> {
         style: ElevatedButton.styleFrom(
           backgroundColor: const Color(0xFFFF2D2D),
           foregroundColor: Colors.white,
-          padding: const EdgeInsets.symmetric(horizontal: 22, vertical: 14),
+          minimumSize: const Size.fromHeight(72),
+          padding: const EdgeInsets.symmetric(horizontal: 36, vertical: 22),
           shape:
-              RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+              RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
           elevation: 0,
-          textStyle: const TextStyle(fontWeight: FontWeight.w700, fontSize: 14),
+          textStyle: const TextStyle(fontWeight: FontWeight.w800, fontSize: 20),
         ),
+      ),
+      textButtonTheme: TextButtonThemeData(
+        style: TextButton.styleFrom(
+          foregroundColor: const Color(0xFF00D4FF),
+          minimumSize: const Size.fromHeight(64),
+          padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 18),
+          shape:
+              RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+          textStyle: const TextStyle(fontWeight: FontWeight.w700, fontSize: 18),
+        ),
+      ),
+      chipTheme: ChipThemeData(
+        labelStyle: const TextStyle(
+            color: Colors.white, fontSize: 18, fontWeight: FontWeight.w600),
+        labelPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 12),
+        shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(14),
+            side: BorderSide(color: Colors.white.withValues(alpha: 0.12))),
       ),
       dividerTheme: DividerThemeData(
         color: Colors.white.withValues(alpha: 0.08),
-        thickness: 1,
-        space: 20,
+        thickness: 1.5,
+        space: 8,
       ),
       textTheme: TextTheme(
         headlineLarge: const TextStyle(
             color: Colors.white,
-            fontSize: 26,
+            fontSize: 38,
             fontWeight: FontWeight.w800,
             letterSpacing: 1,
-            height: 1.2),
+            height: 1.15),
         headlineMedium: TextStyle(
             color: Colors.white.withValues(alpha: 0.5),
-            fontSize: 11,
+            fontSize: 13,
             fontWeight: FontWeight.w700,
             letterSpacing: 2),
         headlineSmall: const TextStyle(
             color: Colors.white,
-            fontSize: 15,
-            fontWeight: FontWeight.w600),
+            fontSize: 22,
+            fontWeight: FontWeight.w700),
         bodyLarge: const TextStyle(
-            color: Colors.white, fontSize: 13, height: 1.5),
+            color: Colors.white, fontSize: 18, height: 1.45),
         bodyMedium: TextStyle(
-            color: Colors.white.withValues(alpha: 0.6),
-            fontSize: 12,
+            color: Colors.white.withValues(alpha: 0.65),
+            fontSize: 16,
             height: 1.4),
         bodySmall: TextStyle(
-            color: Colors.white.withValues(alpha: 0.35),
-            fontSize: 11,
+            color: Colors.white.withValues(alpha: 0.4),
+            fontSize: 14,
             fontStyle: FontStyle.italic),
       ),
     );
