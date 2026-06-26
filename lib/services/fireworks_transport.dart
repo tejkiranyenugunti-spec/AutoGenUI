@@ -18,12 +18,10 @@ String get _model {
   const defined = String.fromEnvironment('FIREWORKS_MODEL');
   if (defined.isNotEmpty) return defined;
   // Default model. Must be one deployed on your Fireworks account — a model
-  // id that 404s means it isn't deployed/subscribed there. deepseek-v4-pro is
-  // known to work on this account; with the trimmed catalog it's faster than
-  // the original 77KB-prompt run. For a faster model, deploy one on Fireworks
-  // and set FIREWORKS_MODEL (e.g. a small instruct model you have access to).
+  // id that 404s means it isn't deployed/subscribed there. Override via
+  // FIREWORKS_MODEL.
   return dotenv.maybeGet('FIREWORKS_MODEL') ??
-      'accounts/fireworks/models/deepseek-v4-pro';
+      'accounts/fireworks/models/glm-5p2';
 }
 
 // Vision model used when a turn carries a camera image. If the default 404s on

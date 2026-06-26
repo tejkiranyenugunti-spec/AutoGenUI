@@ -20,17 +20,24 @@ class IpadFrame extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      // Desk / room backdrop behind the device.
-      decoration: const BoxDecoration(
-        gradient: RadialGradient(
-          center: Alignment(0, -0.15),
-          radius: 1.5,
-          colors: [Color(0xFF2E3138), Color(0xFF0E1014)],
+    return Stack(
+      fit: StackFit.expand,
+      children: [
+        // Background image behind the iPad, covering the whole page.
+        Image.asset(
+          'assets/bg-image.jpg',
+          fit: BoxFit.cover,
         ),
-      ),
-      child: LayoutBuilder(
-        builder: (context, c) {
+        // Dark scrim so the device and HUD read clearly over any photo.
+        Container(color: Colors.black.withValues(alpha: 0.45)),
+        _deviceLayer(context),
+      ],
+    );
+  }
+
+  Widget _deviceLayer(BuildContext context) {
+    return LayoutBuilder(
+      builder: (context, c) {
           final availW = c.maxWidth;
           final availH = c.maxHeight;
 
@@ -67,7 +74,6 @@ class IpadFrame extends StatelessWidget {
           // Straight on — no tilt.
           return Center(child: device);
         },
-      ),
     );
   }
 }

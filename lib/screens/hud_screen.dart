@@ -394,9 +394,11 @@ class _HudScreenState extends State<HudScreen> {
   /// sharply; _beginVoiceInput stops TTS when the mic opens for clean input.
   void _maybeAutoListen() {
     _autoListenTimer?.cancel();
-    if (!_autoListen || _listening || _state == HudState.camera) return;
+    // Don't auto-listen on the active (second) screen — the user taps the
+    // speak button to listen there. (Camera mode is also excluded.)
+    if (!_autoListen || _listening || _state == HudState.active) return;
     _autoListenTimer = Timer(const Duration(milliseconds: 1000), () {
-      if (!mounted || _listening || _state != HudState.active) return;
+      if (!mounted || _listening) return;
       _beginVoiceInput(followUp: true);
     });
   }
@@ -682,7 +684,9 @@ class _HudScreenState extends State<HudScreen> {
             _floatingDemoPanel(),
             if (_state == HudState.normal) ...[_voiceFab(), _cameraFab()],
           ],
-          if (_listening) _listeningBar(),
+          // The active screen has its own listening button in the bottom bar,
+          // so don't also stack the top listening overlay there.
+          if (_listening && _state != HudState.active) _listeningBar(),
         ]),
       ),
     );
@@ -867,6 +871,8 @@ class _HudScreenState extends State<HudScreen> {
                   color: Color(0xFF00D4FF),
                   fontSize: 13,
                   fontWeight: FontWeight.w600)),
+          const SizedBox(width: 16),
+          _demoHeaderButton(),
           const Spacer(),
           if (_transcript.isNotEmpty)
             Flexible(
@@ -881,6 +887,42 @@ class _HudScreenState extends State<HudScreen> {
           const SizedBox(width: 12),
           _cameraHeaderButton(),
         ],
+      ),
+    );
+  }
+
+  /// Demo scenarios toggle that lives IN the active header bar (not floating on
+  /// top of other buttons). Matches the home-screen demo pill styling.
+  Widget _demoHeaderButton() {
+    return GestureDetector(
+      onTap: () => setState(() => _demoPanelExpanded = !_demoPanelExpanded),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+        decoration: BoxDecoration(
+          color: const Color(0xFFFFCC00).withValues(alpha: 0.1),
+          borderRadius: BorderRadius.circular(20),
+          border:
+              Border.all(color: const Color(0xFFFFCC00).withValues(alpha: 0.4)),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(Icons.warning_amber_rounded,
+                color: Color(0xFFFFCC00), size: 13),
+            const SizedBox(width: 6),
+            const Text('Demo',
+                style: TextStyle(
+                    color: Colors.white,
+                    fontSize: 11,
+                    fontWeight: FontWeight.w600)),
+            const SizedBox(width: 4),
+            Icon(
+              _demoPanelExpanded ? Icons.expand_less : Icons.expand_more,
+              color: Colors.white54,
+              size: 14,
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -946,15 +988,28 @@ class _HudScreenState extends State<HudScreen> {
   }
 
   Widget _surfaceCard(String surfaceId) {
-    return Surface(
-      surfaceContext: _controller.contextFor(surfaceId),
-      defaultBuilder: (_) => const Padding(
-        padding: EdgeInsets.symmetric(vertical: 16),
-        child: Center(
-          child: CircularProgressIndicator(
-              color: Color(0xFF00D4FF), strokeWidth: 2),
-        ),
-      ),
+    final ctx = _controller.contextFor(surfaceId);
+    // Sanitize on every definition change, INSIDE the build path and BEFORE the
+    // Surface builds — the conversation-event handler runs too late (the
+    // controller has already notified the Surface, which then crashes on
+    // align:"stretch"). This wrapper is the parent ValueListenable, so it
+    // rebuilds first and mutates the definition in place before the Surface
+    // reads it.
+    return ValueListenableBuilder<SurfaceDefinition?>(
+      valueListenable: ctx.definition,
+      builder: (context, def, _) {
+        if (def != null) _sanitizeSurface(def);
+        return Surface(
+          surfaceContext: ctx,
+          defaultBuilder: (_) => const Padding(
+            padding: EdgeInsets.symmetric(vertical: 16),
+            child: Center(
+              child: CircularProgressIndicator(
+                  color: Color(0xFF00D4FF), strokeWidth: 2),
+            ),
+          ),
+        );
+      },
     );
   }
 
@@ -1347,6 +1402,24 @@ class _HudScreenState extends State<HudScreen> {
     );
   }
 
+  /// Sanitized Surface for the camera guidance panel (see _surfaceCard).
+  Widget _cameraSurface(String surfaceId) {
+    final ctx = _controller.contextFor(surfaceId);
+    return ValueListenableBuilder<SurfaceDefinition?>(
+      valueListenable: ctx.definition,
+      builder: (context, def, _) {
+        if (def != null) _sanitizeSurface(def);
+        return Surface(
+          surfaceContext: ctx,
+          defaultBuilder: (_) => const Center(
+            child: CircularProgressIndicator(
+                color: Color(0xFF00D4FF), strokeWidth: 2),
+          ),
+        );
+      },
+    );
+  }
+
   Widget _cameraGuidancePanel() {
     return Container(
       decoration: BoxDecoration(
@@ -1362,13 +1435,7 @@ class _HudScreenState extends State<HudScreen> {
               child: SingleChildScrollView(
                 controller: _cameraScroll,
                 padding: const EdgeInsets.fromLTRB(20, 20, 20, 56),
-                child: Surface(
-                  surfaceContext: _controller.contextFor(_activeSurfaceId!),
-                  defaultBuilder: (_) => const Center(
-                    child: CircularProgressIndicator(
-                        color: Color(0xFF00D4FF), strokeWidth: 2),
-                  ),
-                ),
+                child: _cameraSurface(_activeSurfaceId!),
               ),
             )
           else
@@ -1484,50 +1551,14 @@ class _HudScreenState extends State<HudScreen> {
         child: _panel(),
       );
     }
+    // Active surface state: the toggle lives in the header bar (left), so here
+    // we only render the expanded panel, dropped just below the header on the
+    // left.
+    if (!_demoPanelExpanded) return const SizedBox.shrink();
     return Positioned(
-      top: 16,
-      right: 16,
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.end,
-        children: [
-          _panelToggle(),
-          if (_demoPanelExpanded) ...[
-            const SizedBox(height: 8),
-            _panel(),
-          ],
-        ],
-      ),
-    );
-  }
-
-  Widget _panelToggle() {
-    return GestureDetector(
-      onTap: () => setState(() => _demoPanelExpanded = !_demoPanelExpanded),
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-        decoration: BoxDecoration(
-          color: const Color(0xFF0D1117).withValues(alpha: 0.95),
-          borderRadius: BorderRadius.circular(20),
-          border: Border.all(color: Colors.white.withValues(alpha: 0.08)),
-        ),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Icon(Icons.warning_amber_rounded,
-                color: Color(0xFFFFCC00), size: 14),
-            const SizedBox(width: 6),
-            const Text('Demo Scenarios',
-                style: TextStyle(
-                    color: Colors.white, fontSize: 12, fontWeight: FontWeight.w600)),
-            const SizedBox(width: 6),
-            Icon(
-              _demoPanelExpanded ? Icons.expand_less : Icons.expand_more,
-              color: Colors.white38,
-              size: 16,
-            ),
-          ],
-        ),
-      ),
+      top: 72,
+      left: 28,
+      child: _panel(),
     );
   }
 
