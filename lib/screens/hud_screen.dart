@@ -23,10 +23,10 @@ You are a generative UI engine. You receive a request and render it as a live, i
 
 The framework supplies the full A2UI component schema and message protocol: createSurface + updateComponents, fenced ```json blocks, a unique surfaceId per response, a root component, and each component's required properties. Use it directly. Output ONLY A2UI messages — no plan, no reasoning, no preamble, no restating the input. Generate the surface immediately.
 
-SURFACE STRUCTURE — keep it compact and consistent. EVERY surface follows this template:
-- 1–2 GUIDANCE components: a Card (or two) that delivers the context/instructions. A Card holds SEVERAL related items (Icon + h3 title + body text), packed into a multi-item Column — dense content blocks, not one line per card and not a long vertical list of step rows.
+SURFACE STRUCTURE — build a RICH, filled surface. EVERY surface follows this template:
+- 2–4 GUIDANCE components: several Cards that deliver the context/instructions. A Card holds SEVERAL related items (Icon + h3 title + body text), packed into a multi-item Column — dense content blocks. Lay out two Cards SIDE BY SIDE in a Row (each `{"weight":1}`); use a second Row for the next pair, or a full-width Card for a longer block. Fill the surface — do not leave it sparse.
 - exactly 1 INTERACTION component: a ChoicePicker (pick a path), a TextField (free text), or a primary Button (confirm / advance / call). Never just static text and stop; never more than one interactive control.
-- Do NOT produce a tall stack of many full-width rows. Two guidance cards + one interaction is the whole surface.
+- Do NOT produce a tall stack of many full-width single-line rows. Use 2-up Card Rows + one interaction.
 
 VISUAL DESIGN — build a real, varied, interactive interface, never a word dump and never a flat list of full-width rows.
 - Do NOT stretch every component full-width. Put blocks SIDE BY SIDE: a Row whose children each set `"weight": 1` share the width equally (e.g. two Cards in a Row, each `{"weight":1}`). This is the default way to lay out two guidance cards.
@@ -103,6 +103,14 @@ class _HudScreenState extends State<HudScreen> {
   String _transcript = '';
   String _errorMessage = '';
   String? _activeSurfaceId;
+  // Ordered history of surface ids rendered this conversation, oldest first.
+  // Each turn appends a new surface below the previous ones so the UI grows
+  // downward like a conversation thread (not a replace-in-place).
+  final List<String> _surfaces = [];
+  // After each surface renders, automatically start listening for the user's
+  // spoken feedback so the conversation + UI keeps building hands-free.
+  final bool _autoListen = true;
+  Timer? _autoListenTimer;
   final Set<String> _selectedTools = {'Spare Tire', 'Car Jack', 'Lug Wrench'};
 
   late final SurfaceController _controller;
@@ -205,6 +213,7 @@ class _HudScreenState extends State<HudScreen> {
           _sanitizeSurface(definition);
           setState(() {
             _activeSurfaceId = surfaceId;
+            if (!_surfaces.contains(surfaceId)) _surfaces.add(surfaceId);
             _state = (_returnToCamera || _state == HudState.camera)
                 ? HudState.camera
                 : HudState.active;
@@ -214,6 +223,7 @@ class _HudScreenState extends State<HudScreen> {
           });
           _speakGuide(definition);
           _scrollSurfaceToBottom();
+          _maybeAutoListen();
         // The controller emits ComponentsUpdated (not SurfaceAdded) when the
         // model re-creates an already-known surfaceId or refreshes components.
         // Without this, the 2nd+ turn would never set _activeSurfaceId and the
@@ -224,6 +234,7 @@ class _HudScreenState extends State<HudScreen> {
           _sanitizeSurface(definition);
           setState(() {
             _activeSurfaceId = surfaceId;
+            if (!_surfaces.contains(surfaceId)) _surfaces.add(surfaceId);
             _state = (_returnToCamera || _state == HudState.camera)
                 ? HudState.camera
                 : HudState.active;
@@ -233,6 +244,7 @@ class _HudScreenState extends State<HudScreen> {
           });
           _speakGuide(definition);
           _scrollSurfaceToBottom();
+          _maybeAutoListen();
         case ConversationError(:final error):
           setState(() {
             _analyzing = false;
@@ -253,6 +265,7 @@ class _HudScreenState extends State<HudScreen> {
   @override
   void dispose() {
     _autoCaptureTimer?.cancel();
+    _autoListenTimer?.cancel();
     _conversation.dispose();
     _controller.dispose();
     _speech.dispose();
@@ -272,13 +285,14 @@ class _HudScreenState extends State<HudScreen> {
     final withTools = '$text. Tools in my car: $_toolsContext.';
     setState(() {
       _transcript = text;
-      // Go straight to the active surface area — no load screen. Components
-      // appear inline as the model streams them in.
+      // Fresh scenario → new conversation. Clear the stacked surface history.
       _state = HudState.active;
       _errorMessage = '';
       _activeSurfaceId = null;
+      _surfaces.clear();
       _returnToCamera = false;
     });
+    _autoListenTimer?.cancel();
 
     // Safety net: if the transport returns without adding a surface OR emitting
     // an error (e.g. empty/invalid model output), surface a clear message
@@ -371,6 +385,19 @@ class _HudScreenState extends State<HudScreen> {
         c.animateTo(c.position.maxScrollExtent,
             duration: 240.ms, curve: Curves.easeOut);
       }
+    });
+  }
+
+  /// After a surface renders, automatically start listening for the user's
+  /// spoken feedback so the conversation (and the stacked UI) keeps building
+  /// hands-free. Delayed briefly so the spoken guidance isn't cut off too
+  /// sharply; _beginVoiceInput stops TTS when the mic opens for clean input.
+  void _maybeAutoListen() {
+    _autoListenTimer?.cancel();
+    if (!_autoListen || _listening || _state == HudState.camera) return;
+    _autoListenTimer = Timer(const Duration(milliseconds: 1000), () {
+      if (!mounted || _listening || _state != HudState.active) return;
+      _beginVoiceInput(followUp: true);
     });
   }
 
@@ -608,12 +635,14 @@ class _HudScreenState extends State<HudScreen> {
     _speech.stopListening();
     _autoCaptureTimer?.cancel();
     _autoCaptureTimer = null;
+    _autoListenTimer?.cancel();
     _camera.stop();
     setState(() {
       _state = HudState.normal;
       _listening = false;
       _transcript = '';
       _activeSurfaceId = null;
+      _surfaces.clear();
       _errorMessage = '';
       _lastSpoken = '';
       _analyzing = false;
@@ -764,9 +793,9 @@ class _HudScreenState extends State<HudScreen> {
           Expanded(
             child: _errorMessage.isNotEmpty
                 ? _errorView()
-                : _activeSurfaceId != null
-                    ? _buildSurface(_activeSurfaceId!)
-                    : _inlineStreamingLoader(),
+                : _surfaces.isEmpty
+                    ? _inlineStreamingLoader()
+                    : _buildSurfaceStack(),
           ),
           _dismissBar(),
         ],
@@ -883,28 +912,49 @@ class _HudScreenState extends State<HudScreen> {
     );
   }
 
-  Widget _buildSurface(String surfaceId) {
+  /// Renders the whole conversation as a vertical stack of surfaces (oldest
+  /// first) inside one scroll view. Each turn appends a new surface below the
+  /// previous ones, and the view auto-scrolls to the newest at the bottom.
+  Widget _buildSurfaceStack() {
     return ValueListenableBuilder<ConversationState>(
       valueListenable: _conversation.state,
       builder: (context, state, child) {
-        final ctx = _controller.contextFor(surfaceId);
-        // Keep the view pinned to the latest streamed component.
         _scrollSurfaceToBottom();
         return Theme(
           data: _hudTheme(context),
           child: SingleChildScrollView(
             controller: _surfaceScroll,
             padding: const EdgeInsets.fromLTRB(20, 24, 20, 32),
-            child: Surface(
-              surfaceContext: ctx,
-              defaultBuilder: (_) => const Center(
-                child: CircularProgressIndicator(
-                    color: Color(0xFF00D4FF), strokeWidth: 2),
-              ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                for (int i = 0; i < _surfaces.length; i++) ...[
+                  if (i > 0) const SizedBox(height: 20),
+                  _surfaceCard(_surfaces[i]),
+                ],
+                // Live generating / listening indicator below the last surface.
+                if (_listening || _surfaces.isEmpty) ...[
+                  const SizedBox(height: 20),
+                  _inlineStreamingLoader(),
+                ],
+              ],
             ),
           ),
         );
       },
+    );
+  }
+
+  Widget _surfaceCard(String surfaceId) {
+    return Surface(
+      surfaceContext: _controller.contextFor(surfaceId),
+      defaultBuilder: (_) => const Padding(
+        padding: EdgeInsets.symmetric(vertical: 16),
+        child: Center(
+          child: CircularProgressIndicator(
+              color: Color(0xFF00D4FF), strokeWidth: 2),
+        ),
+      ),
     );
   }
 
