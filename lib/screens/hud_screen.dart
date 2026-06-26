@@ -577,6 +577,31 @@ class _HudScreenState extends State<HudScreen> {
       if (c.type == 'Row' && c.properties['align'] == 'stretch') {
         c.properties['align'] = 'start';
       }
+      // A Row of two Cards WITHOUT `weight` on the children sizes each Card to
+      // its intrinsic width (long body text → very wide) and overflows the
+      // Row on the right. If this is a multi-child Row of Cards with no child
+      // weights, give each Card `weight: 1` so they Expanded and share the
+      // width equally. (Only done for Card children so icon+text header Rows
+      // are left alone.)
+      if (c.type == 'Row') {
+        final children = c.properties['children'];
+        if (children is List && children.length >= 2) {
+          final childComps = <Component>[];
+          for (final id in children) {
+            if (id is String) {
+              final comp = def.components[id];
+              if (comp != null) childComps.add(comp);
+            }
+          }
+          if (childComps.length == children.length &&
+              childComps.every((cc) => cc.type == 'Card') &&
+              childComps.every((cc) => cc.properties['weight'] == null)) {
+            for (final cc in childComps) {
+              cc.properties['weight'] = 1;
+            }
+          }
+        }
+      }
     }
   }
 
@@ -843,29 +868,6 @@ class _HudScreenState extends State<HudScreen> {
       ),
       child: Row(
         children: [
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-            decoration: BoxDecoration(
-              color: const Color(0xFF7C3AED).withValues(alpha: 0.15),
-              borderRadius: BorderRadius.circular(20),
-              border: Border.all(
-                  color: const Color(0xFF7C3AED).withValues(alpha: 0.4)),
-            ),
-            child: const Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Icon(Icons.auto_awesome, color: Color(0xFF7C3AED), size: 11),
-                SizedBox(width: 6),
-                Text('GEN UI · AI GENERATED',
-                    style: TextStyle(
-                        color: Color(0xFF7C3AED),
-                        fontSize: 10,
-                        letterSpacing: 1.5,
-                        fontWeight: FontWeight.w700)),
-              ],
-            ),
-          ).animate().fadeIn(duration: 400.ms),
-          const SizedBox(width: 16),
           const Icon(Icons.shield, color: Color(0xFF00D4FF), size: 14),
           const SizedBox(width: 6),
           const Text('Guardian AI',
