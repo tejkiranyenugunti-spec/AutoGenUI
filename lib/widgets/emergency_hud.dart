@@ -28,7 +28,7 @@ class EmergencyHud extends StatelessWidget {
           begin: Alignment.topCenter,
           end: Alignment.bottomCenter,
           colors: [
-            _severityColor.withOpacity(0.12),
+            _severityColor.withValues(alpha: 0.12),
             const Color(0xFF0A0A0F),
           ],
         ),
@@ -66,9 +66,9 @@ class EmergencyHud extends StatelessWidget {
       padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 16),
       decoration: BoxDecoration(
         border: Border(
-          bottom: BorderSide(color: _severityColor.withOpacity(0.3)),
+          bottom: BorderSide(color: _severityColor.withValues(alpha: 0.3)),
         ),
-        color: _severityColor.withOpacity(0.08),
+        color: _severityColor.withValues(alpha: 0.08),
       ),
       child: Row(
         children: [
@@ -108,14 +108,14 @@ class EmergencyHud extends StatelessWidget {
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
             decoration: BoxDecoration(
-              color: Colors.white.withOpacity(0.05),
+              color: Colors.white.withValues(alpha: 0.05),
               borderRadius: BorderRadius.circular(20),
-              border: Border.all(color: Colors.white.withOpacity(0.1)),
+              border: Border.all(color: Colors.white.withValues(alpha: 0.1)),
             ),
             child: Text(
               'AI GENERATED',
               style: TextStyle(
-                color: Colors.white.withOpacity(0.4),
+                color: Colors.white.withValues(alpha: 0.4),
                 fontSize: 10,
                 letterSpacing: 2,
               ),
@@ -146,12 +146,12 @@ class EmergencyHud extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
-        color: Colors.white.withOpacity(0.04),
+        color: Colors.white.withValues(alpha: 0.04),
         borderRadius: BorderRadius.circular(12),
         border: Border.all(
           color: index == 0
-              ? _severityColor.withOpacity(0.5)
-              : Colors.white.withOpacity(0.08),
+              ? _severityColor.withValues(alpha: 0.5)
+              : Colors.white.withValues(alpha: 0.08),
           width: index == 0 ? 1.5 : 1,
         ),
       ),
@@ -164,7 +164,7 @@ class EmergencyHud extends StatelessWidget {
                 width: 22,
                 height: 22,
                 decoration: BoxDecoration(
-                  color: index == 0 ? _severityColor : Colors.white.withOpacity(0.15),
+                  color: index == 0 ? _severityColor : Colors.white.withValues(alpha: 0.15),
                   shape: BoxShape.circle,
                 ),
                 child: Center(
@@ -198,7 +198,7 @@ class EmergencyHud extends StatelessWidget {
           Text(
             step.description,
             style: TextStyle(
-              color: Colors.white.withOpacity(0.55),
+              color: Colors.white.withValues(alpha: 0.55),
               fontSize: 12,
               height: 1.4,
             ),
@@ -215,18 +215,18 @@ class EmergencyHud extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
       decoration: BoxDecoration(
-        color: Colors.white.withOpacity(0.04),
+        color: Colors.white.withValues(alpha: 0.04),
         borderRadius: BorderRadius.circular(8),
-        border: Border.all(color: Colors.white.withOpacity(0.06)),
+        border: Border.all(color: Colors.white.withValues(alpha: 0.06)),
       ),
       child: Row(
         children: [
-          Icon(Icons.build_outlined, color: Colors.white.withOpacity(0.4), size: 14),
+          Icon(Icons.build_outlined, color: Colors.white.withValues(alpha: 0.4), size: 14),
           const SizedBox(width: 10),
           Text(
             'Tools detected: ',
             style: TextStyle(
-              color: Colors.white.withOpacity(0.4),
+              color: Colors.white.withValues(alpha: 0.4),
               fontSize: 12,
             ),
           ),
@@ -235,10 +235,10 @@ class EmergencyHud extends StatelessWidget {
                 child: Container(
                   padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
                   decoration: BoxDecoration(
-                    color: const Color(0xFF00FF88).withOpacity(0.12),
+                    color: const Color(0xFF00FF88).withValues(alpha: 0.12),
                     borderRadius: BorderRadius.circular(4),
                     border: Border.all(
-                      color: const Color(0xFF00FF88).withOpacity(0.3),
+                      color: const Color(0xFF00FF88).withValues(alpha: 0.3),
                     ),
                   ),
                   child: Text(
@@ -272,14 +272,14 @@ class EmergencyHud extends StatelessWidget {
     return ElevatedButton.icon(
       onPressed: () {},
       style: ElevatedButton.styleFrom(
-        backgroundColor: isPrimary ? _severityColor : Colors.white.withOpacity(0.08),
+        backgroundColor: isPrimary ? _severityColor : Colors.white.withValues(alpha: 0.08),
         foregroundColor: isPrimary ? Colors.black : Colors.white,
         padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
         elevation: 0,
         side: isPrimary
             ? null
-            : BorderSide(color: Colors.white.withOpacity(0.15)),
+            : BorderSide(color: Colors.white.withValues(alpha: 0.15)),
       ),
       icon: Icon(
         _iconForType(action.type),
@@ -311,14 +311,14 @@ class EmergencyHud extends StatelessWidget {
       width: double.infinity,
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
       decoration: BoxDecoration(
-        color: Colors.white.withOpacity(0.03),
+        color: Colors.white.withValues(alpha: 0.03),
         borderRadius: BorderRadius.circular(8),
-        border: Border.all(color: Colors.white.withOpacity(0.06)),
+        border: Border.all(color: Colors.white.withValues(alpha: 0.06)),
       ),
       child: Text(
         response.additionalContext,
         style: TextStyle(
-          color: Colors.white.withOpacity(0.45),
+          color: Colors.white.withValues(alpha: 0.45),
           fontSize: 13,
           fontStyle: FontStyle.italic,
         ),
@@ -331,11 +331,11 @@ class EmergencyHud extends StatelessWidget {
       padding: const EdgeInsets.all(20),
       child: TextButton.icon(
         onPressed: onDismiss,
-        icon: Icon(Icons.close, size: 16, color: Colors.white.withOpacity(0.3)),
+        icon: Icon(Icons.close, size: 16, color: Colors.white.withValues(alpha: 0.3)),
         label: Text(
           'Dismiss — return to HUD',
           style: TextStyle(
-            color: Colors.white.withOpacity(0.3),
+            color: Colors.white.withValues(alpha: 0.3),
             fontSize: 13,
           ),
         ),
