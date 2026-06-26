@@ -52,6 +52,37 @@
     For more details:
     * https://docs.flutter.dev/platform-integration/web/initialization
   -->
+
+  <!-- Voice-out (text-to-speech) helper for Guardian HUD guidance.
+       Exposes window.guardianSpeak / guardianSpeakStop for the Dart side to
+       call via JS interop. Uses the browser Web Speech API; no-ops where
+       unsupported. -->
+  <script>
+    (function () {
+      function pickVoice(voices) {
+        for (var i = 0; i < voices.length; i++) {
+          var v = voices[i];
+          if (v.lang && v.lang.indexOf('en') === 0) return v;
+        }
+        return null;
+      }
+      window.guardianSpeak = function (text) {
+        var synth = window.speechSynthesis;
+        if (!synth) return;
+        synth.cancel();
+        if (!text) return;
+        var u = new SpeechSynthesisUtterance(text);
+        u.rate = 1.0; u.pitch = 1.0; u.volume = 1.0;
+        var v = pickVoice(synth.getVoices());
+        if (v) u.voice = v;
+        synth.speak(u);
+      };
+      window.guardianSpeakStop = function () {
+        if (window.speechSynthesis) window.speechSynthesis.cancel();
+      };
+    })();
+  </script>
+
   <script src="flutter_bootstrap.js" async></script>
 </body>
 </html>

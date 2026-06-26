@@ -1,19 +1,36 @@
 import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/foundation.dart';
+import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:genui/genui.dart';
 import 'package:http/http.dart' as http;
 
-// Configure via --dart-define=FIREWORKS_API_KEY=your_key (or the
-// FIREWORKS_API_KEY env var). No embedded default key: committing a secret to
-// source is a security risk, so the app refuses to run until a key is supplied
-// (see the actionable StateError below). The model can optionally be overridden
-// with --dart-define=FIREWORKS_MODEL=...
-const _apiKey = String.fromEnvironment('FIREWORKS_API_KEY');
-const _model = String.fromEnvironment(
-  'FIREWORKS_MODEL',
-  defaultValue: 'accounts/fireworks/models/glm-5p2',
-);
+// Secrets are read at runtime from .env (loaded in main via flutter_dotenv),
+// with --dart-define as a compile-time override. No key is baked into source;
+// the app refuses to run until a key is supplied (see the StateError below).
+String get _apiKey {
+  const defined = String.fromEnvironment('FIREWORKS_API_KEY');
+  if (defined.isNotEmpty) return defined;
+  return dotenv.maybeGet('FIREWORKS_API_KEY') ?? '';
+}
+
+String get _model {
+  const defined = String.fromEnvironment('FIREWORKS_MODEL');
+  if (defined.isNotEmpty) return defined;
+  return dotenv.maybeGet('FIREWORKS_MODEL') ??
+      'accounts/fireworks/models/glm-5p2';
+}
+
+// Vision model used when a turn carries a camera image. If the default 404s on
+// your account, set FIREWORKS_VISION_MODEL in .env to the router alias
+// fireworks/glm-4p5v or fireworks/qwen3-vl-32b-instruct.
+String get _visionModel {
+  const defined = String.fromEnvironment('FIREWORKS_VISION_MODEL');
+  if (defined.isNotEmpty) return defined;
+  return dotenv.maybeGet('FIREWORKS_VISION_MODEL') ??
+      'accounts/fireworks/models/glm-4p5v';
+}
+
 const _baseUrl = 'https://api.fireworks.ai/inference/v1/chat/completions';
 
 // Low temperature for deterministic A2UI JSON structure — high creativity
@@ -95,22 +112,31 @@ Conversation buildConversation({
   required FireworksTrace trace,
 }) {
   late A2uiTransportAdapter transport;
-  final List<Map<String, String>> history = [];
+  // content can be a String (text turns) or a List (image turns), so the value
+  // type is Object.
+  final List<Map<String, Object>> history = [];
 
   transport = A2uiTransportAdapter(
     onSend: (ChatMessage message) async {
       trace.reset();
-      // A user turn can be either plain text (voice/scenario) OR a UI
-      // interaction (the driver tapped a Button / submitted a ChoicePicker).
-      // Interaction data lives in a UiInteractionPart, NOT in text — the old
-      // getText() call returned '' for those, so the model never learned what
-      // the driver chose and the "conversation" was one-way. Serialize every
-      // part so both text and actions reach the model.
-      final userText = _contentFromMessage(message);
-      trace.userPrompt = userText;
-      _log('send → model=$_model prompt="${userText.substring(0, userText.length.clamp(0, 80))}" '
+      // A user turn can be: plain text (voice/scenario), a UI interaction (the
+      // driver tapped a Button / submitted a ChoicePicker), or a camera image.
+      // Interaction data lives in a UiInteractionPart and images in an image
+      // DataPart — neither is text, so the old getText() returned '' and the
+      // conversation was one-way. _contentFromMessage serializes every part:
+      // it returns a String for text-only turns, or an OpenAI-style content
+      // array ([{type:text,…},{type:image_url,…}]) when an image is present.
+      // When an image is present we also route to a vision-capable model.
+      final content = _contentFromMessage(message);
+      final hasImage = content is List;
+      final model = hasImage ? _visionModel : _model;
+      final contentPreview = content is String
+          ? content.substring(0, content.length.clamp(0, 80))
+          : '[image + text]';
+      trace.userPrompt = content is String ? content : contentPreview;
+      _log('send → model=$model hasImage=$hasImage prompt="$contentPreview" '
           'history=${history.length} apiKey=${_apiKey.isEmpty ? "<MISSING>" : "set(${_apiKey.length} chars)"}');
-      trace.appendLog('send → model=$_model');
+      trace.appendLog('send → model=$model${hasImage ? ' (vision)' : ''}');
 
       // Fail fast with an actionable message instead of a silent 401 hang.
       if (_apiKey.isEmpty) {
@@ -124,7 +150,22 @@ Conversation buildConversation({
         );
       }
 
-      history.add({'role': 'user', 'content': userText});
+      history.add({'role': 'user', 'content': content});
+
+      // Live camera mode sends a new image every few seconds. Keeping every
+      // prior image in history would balloon the context (and cost), so when
+      // this turn carries an image, replace earlier image turns with a short
+      // text placeholder — only the latest frame stays as an image.
+      if (hasImage) {
+        for (var i = 0; i < history.length - 1; i++) {
+          if (history[i]['content'] is List) {
+            history[i] = {
+              'role': history[i]['role'] as String,
+              'content': '[earlier camera frame]',
+            };
+          }
+        }
+      }
 
       final client = http.Client();
       try {
@@ -134,7 +175,7 @@ Conversation buildConversation({
         request.headers['Accept'] = 'text/event-stream';
 
         final bodyMap = {
-          'model': _model,
+          'model': model,
           'messages': [
             {'role': 'system', 'content': systemPrompt},
             ...history,
@@ -147,18 +188,19 @@ Conversation buildConversation({
           'stream': true,
         };
         request.body = jsonEncode(bodyMap);
-        // Pretty-printed copy for human reading in the UI (system prompt can be
-        // long, so truncate it in the trace).
-        final traceMessages = [
+        // Pretty-printed copy for human reading in the UI. The system prompt is
+        // long so it's truncated; image data URLs are enormous so they're
+        // stripped to a placeholder (via _traceMessage) to keep it readable.
+        final traceMessages = <Map<String, Object>>[
           {
             'role': 'system',
             'content':
                 '${systemPrompt.substring(0, systemPrompt.length.clamp(0, 200))}… (${systemPrompt.length} chars total)',
           },
-          ...history,
+          ...history.map(_traceMessage),
         ];
         trace.requestBody = const JsonEncoder.withIndent('  ').convert({
-          'model': _model,
+          'model': model,
           'messages': traceMessages,
           'max_tokens': 16384,
           'temperature': _temperature,
@@ -350,22 +392,32 @@ String _summarizeErrorBody(String body) {
   return trimmed.length > 300 ? '${trimmed.substring(0, 300)}…' : trimmed;
 }
 
-/// Serializes a [ChatMessage] into the text content sent to Fireworks.
+/// Serializes a [ChatMessage] into the `content` sent to Fireworks.
+///
+/// Returns a [String] for text-only turns (kept as a plain string so the text
+/// model path is unchanged), or an OpenAI-style content array
+/// `[{type:text,…},{type:image_url,image_url:{url:"data:image/jpeg;base64,…"}}]`
+/// when the message carries a camera image — which also routes the call to a
+/// vision model (see `onSend`).
 ///
 /// Text turns come through as [TextPart]s; interactive turns (a Button press,
 /// a ChoicePicker submission) come through as a [DataPart] with the A2UI
-/// interaction MIME type, whose payload is a JSON string of the form
-/// `{"version":"v0.9","action":{...}}`. We surface the action as a
-/// `[USER_ACTION] ...` line so the model can continue the dialog — the system
-/// prompt instructs it to treat these as the driver's reply and generate the
-/// next surface.
-String _contentFromMessage(ChatMessage message) {
-  final buf = StringBuffer();
+/// interaction MIME type, whose payload is `{"version":"v0.9","action":{…}}`.
+/// We surface the action as a `[USER_ACTION] …` line so the model can continue
+/// the dialog — the system prompt instructs it to treat these as the driver's
+/// reply and generate the next surface.
+Object _contentFromMessage(ChatMessage message) {
+  final textBuf = StringBuffer();
+  String? imageDataUrl;
   for (final part in message.parts) {
     if (part is TextPart) {
       if (part.text.isEmpty) continue;
-      if (buf.isNotEmpty) buf.write('\n');
-      buf.write(part.text);
+      if (textBuf.isNotEmpty) textBuf.write('\n');
+      textBuf.write(part.text);
+    } else if (part is DataPart &&
+        part.mimeType.startsWith('image/')) {
+      imageDataUrl =
+          'data:${part.mimeType};base64,${base64Encode(part.bytes)}';
     } else if (part is DataPart &&
         part.mimeType == UiPartConstants.interactionMimeType) {
       final interaction = UiInteractionPart.fromDataPart(part).interaction;
@@ -377,9 +429,50 @@ String _contentFromMessage(ChatMessage message) {
       } catch (_) {
         actionLine = '[USER_ACTION] $interaction';
       }
-      if (buf.isNotEmpty) buf.write('\n');
-      buf.write(actionLine);
+      if (textBuf.isNotEmpty) textBuf.write('\n');
+      textBuf.write(actionLine);
     }
   }
-  return buf.toString();
+
+  final text = textBuf.toString();
+  if (imageDataUrl == null) return text;
+
+  // Multimodal content: text first (if any), then the image.
+  final content = <Map<String, Object>>[];
+  if (text.isNotEmpty) content.add({'type': 'text', 'text': text});
+  content.add({
+    'type': 'image_url',
+    'image_url': {'url': imageDataUrl},
+  });
+  return content;
+}
+
+/// Builds a trace-friendly copy of a history entry: identical for text turns,
+/// but with image data URLs replaced by a `[image: N bytes]` placeholder so the
+/// on-screen request dump isn't swamped by megabytes of base64.
+Map<String, Object> _traceMessage(Map<String, Object> entry) {
+  final content = entry['content'];
+  if (content is! List) return entry;
+  final stripped = <Map<String, Object>>[];
+  for (final raw in content) {
+    if (raw is Map && raw['type'] == 'image_url') {
+      final imageUrl = raw['image_url'];
+      String preview = '[image]';
+      if (imageUrl is Map) {
+        final url = imageUrl['url'];
+        if (url is String && url.startsWith('data:')) {
+          final comma = url.indexOf(',');
+          final b64 = comma >= 0 ? url.substring(comma + 1) : '';
+          preview = '[image: ${(b64.length * 3 / 4).round()} bytes]';
+        }
+      }
+      stripped.add({
+        'type': 'image_url',
+        'image_url': {'url': preview},
+      });
+    } else if (raw is Map) {
+      stripped.add(Map<String, Object>.from(raw));
+    }
+  }
+  return {'role': entry['role'] as String, 'content': stripped};
 }

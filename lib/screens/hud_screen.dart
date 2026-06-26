@@ -1,14 +1,20 @@
+import 'dart:async';
+import 'dart:convert';
+import 'dart:typed_data';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 import 'package:genui/genui.dart';
 
+import '../services/camera_service.dart';
 import '../services/fireworks_transport.dart';
 import '../services/speech_service.dart';
+import '../services/tts_service.dart';
 import '../widgets/normal_hud.dart';
 import '../widgets/voice_indicator.dart';
 
-enum HudState { onboarding, normal, listening, processing, active }
+enum HudState { onboarding, normal, listening, processing, active, camera }
 
 // ---------------------------------------------------------------------------
 // System prompt — detailed genui instructions for rich dark HUD UI
@@ -20,7 +26,8 @@ The framework gives you the full A2UI component schema and message protocol (cre
 
 DRIVING-FIRST DESIGN — the driver cannot look at or tap small targets.
 - NEVER use Tabs. The driver cannot switch tabs while driving. Present everything as ONE linear, glanceable, scrollable flow.
-- GO BIG. This is a car HUD, not a phone form: large text, fat buttons, chunky chips, full-width cards that stack edge-to-edge with little/no gap between them. The driver is glancing, not reading — every tap target must be oversized.
+- GO BIG on structure: large text, fat buttons, full-width cards that stack edge-to-edge with little/no gap between them. The driver is glancing, not reading — every tap target must be oversized. KEEP CHOICEPICKER OPTIONS NEAT instead: uniform same-size pills, a clean wrap, 2–5 short options, never a crowded wall of chips.
+- VOICE: the HUD SPEAKS every Text you write aloud to the driver, and the driver may SPEAK their answer back. So write Text as natural, speakable sentences — not telegraphic labels, no emoji-only text, no arrows/symbols. Keep ChoicePicker option labels short and voice-friendly so the driver can say one back ("Yes", "No", "Chest pain", "Call 911 now"). Phrase the question Text as a real spoken question.
 - Build a real visual interface, never a word dump: use Card as a padded container to GROUP related content (Icon + title + sub-items in one Card), Icon for visual cues (warning, call, locationOn, error, lock, lockOpen, info, refresh), Divider to separate sections, Row/Column with justify ("center","spaceBetween") and align ("center","stretch") for deliberate spacing.
 - HIERARCHY with Text variants: one h1 headline with an Icon beside it, h2 section headers, h3 item titles, caption notes, body one-liners. Keep each Text ~6 words.
 - Make the single most important action a "primary" Button; secondary actions "borderless" Buttons; use "spaceBetween" so they aren't crammed together.
@@ -36,6 +43,7 @@ TWO-WAY CONVERSATION — use interactivity ONLY when you genuinely need info fro
 - A ChoicePicker with "variant":"multipleSelection" works as a mark-each-step-done checklist.
 - Keep each turn short and glanceable. Prioritize the call-911 / roadside / move-to-safety action once enough is known.
 - Adapt to available tools: only instruct actions the driver can perform with what they have; otherwise offer the appropriate assistance action. Never advise stopping in an unsafe or isolated location.
+- The driver may also send CAMERA IMAGES of the situation (a tire, smoke, a leak, a dashboard light, an injury, or their own body). When you receive an image, base your guidance on what you actually SEE — name the visible problem and give the next concrete step. If the image already answers a question you would otherwise ask (for example, you can SEE which side of the chest the driver's hand is pressed against during a heart attack, or SEE whether a tire is flat), do NOT ask that question — proceed straight to the next step. Images may arrive repeatedly as the situation changes; treat each as the current state and update your guidance. Keep outputting A2UI messages only.
 
 CORRECTNESS (the parser rejects unknown fields):
 - Every Button MUST reference a SEPARATE Text child by id, e.g. {"id":"btn1","component":"Button","child":"btn1text","variant":"primary","action":{"event":{"name":"call_911"}}} plus {"id":"btn1text","component":"Text","text":"📞 Call 911"}.
@@ -97,9 +105,28 @@ class _HudScreenState extends State<HudScreen> {
   late final SurfaceController _controller;
   late final Conversation _conversation;
   late final SpeechService _speech;
+  final TtsService _tts = TtsService();
+  final CameraService _camera = createCameraService();
   final TextEditingController _customInput = TextEditingController();
   final FireworksTrace _trace = FireworksTrace();
   bool _demoPanelExpanded = true;
+  // Live camera mode: Guardian periodically captures frames and updates
+  // guidance without the driver tapping anything. _analyzing gates overlap
+  // (don't send a new frame while the previous one is still being processed).
+  bool _analyzing = false;
+  bool _autoCapture = true;
+  Timer? _autoCaptureTimer;
+  // Set when a voice input starts from camera mode, so the state machine
+  // returns to the camera layout (instead of active) once the reply is sent.
+  bool _returnToCamera = false;
+
+  // Voice-out: the spoken script of the last surface, used to debounce so a
+  // SurfaceAdded + ComponentsUpdated for the same turn isn't spoken twice.
+  String _lastSpoken = '';
+  // Whether the current voice-input turn is a follow-up answer (vs. the first
+  // emergency report). Decides whether the transcript is sent with the tools
+  // context or as a bare reply.
+  bool _voiceFollowUp = false;
 
   @override
   void initState() {
@@ -128,28 +155,54 @@ class _HudScreenState extends State<HudScreen> {
       if (!mounted) return;
       switch (event) {
         case ConversationWaiting():
-          setState(() => _state = HudState.processing);
-        case ConversationSurfaceAdded(:final surfaceId):
+          setState(() {
+            // In camera mode (or returning to it after a voice reply) keep the
+            // live layout visible and just flag "analyzing" instead of swapping
+            // to the full-screen spinner.
+            if (_returnToCamera || _state == HudState.camera) {
+              _state = HudState.camera;
+              _analyzing = true;
+            } else {
+              _state = HudState.processing;
+            }
+          });
+        case ConversationSurfaceAdded(:final surfaceId, :final definition):
           setState(() {
             _activeSurfaceId = surfaceId;
-            _state = HudState.active;
+            _state = (_returnToCamera || _state == HudState.camera)
+                ? HudState.camera
+                : HudState.active;
             _errorMessage = '';
+            _analyzing = false;
+            _returnToCamera = false;
           });
+          _speakGuide(definition);
         // The controller emits ComponentsUpdated (not SurfaceAdded) when the
         // model re-creates an already-known surfaceId or refreshes components.
         // Without this, the 2nd+ turn would never set _activeSurfaceId and the
         // safety-net would wrongly show the error view. Clearing _errorMessage
         // here also lets an action-triggered follow-up recover from a prior
         // turn's error.
-        case ConversationComponentsUpdated(:final surfaceId):
+        case ConversationComponentsUpdated(:final surfaceId, :final definition):
           setState(() {
             _activeSurfaceId = surfaceId;
-            _state = HudState.active;
+            _state = (_returnToCamera || _state == HudState.camera)
+                ? HudState.camera
+                : HudState.active;
             _errorMessage = '';
+            _analyzing = false;
+            _returnToCamera = false;
           });
+          _speakGuide(definition);
         case ConversationError(:final error):
           setState(() {
-            _state = HudState.active;
+            _analyzing = false;
+            // Stay in camera mode on error so the driver can recapture; the
+            // error is shown inline in the guidance panel.
+            _state = (_returnToCamera || _state == HudState.camera)
+                ? HudState.camera
+                : HudState.active;
+            _returnToCamera = false;
             _errorMessage = error.toString();
           });
         default:
@@ -160,9 +213,12 @@ class _HudScreenState extends State<HudScreen> {
 
   @override
   void dispose() {
+    _autoCaptureTimer?.cancel();
     _conversation.dispose();
     _controller.dispose();
     _speech.dispose();
+    _tts.dispose();
+    _camera.dispose();
     _customInput.dispose();
     _trace.dispose();
     super.dispose();
@@ -178,6 +234,7 @@ class _HudScreenState extends State<HudScreen> {
       _state = HudState.processing;
       _errorMessage = '';
       _activeSurfaceId = null;
+      _returnToCamera = false;
     });
 
     // Safety net: if the transport returns without adding a surface OR emitting
@@ -216,7 +273,15 @@ class _HudScreenState extends State<HudScreen> {
     }
   }
 
-  Future<void> _startListening() async {
+  Future<void> _startListening() => _beginVoiceInput(followUp: false);
+
+  /// Starts the mic. When [followUp] is true the recognized text is sent as a
+  /// bare reply (continuing the active conversation) instead of a fresh
+  /// scenario with the tools context appended.
+  Future<void> _beginVoiceInput({required bool followUp}) async {
+    _tts.stop(); // don't let the HUD speak over the driver's answer
+    _voiceFollowUp = followUp;
+    _returnToCamera = (_state == HudState.camera);
     setState(() {
       _state = HudState.listening;
       _transcript = '';
@@ -224,17 +289,250 @@ class _HudScreenState extends State<HudScreen> {
     await _speech.startListening(
       onResult: (t) => setState(() => _transcript = t),
       onDone: () {
-        if (_transcript.isNotEmpty) _sendScenario(_transcript);
+        if (!mounted) return;
+        if (_transcript.isNotEmpty) {
+          if (_voiceFollowUp) {
+            _sendFollowUp(_transcript);
+          } else {
+            _sendScenario(_transcript);
+          }
+        } else {
+          // Nothing recognized — return to where we were.
+          setState(() {
+            _state = _returnToCamera
+                ? HudState.camera
+                : (_activeSurfaceId != null ? HudState.active : HudState.normal);
+            _returnToCamera = false;
+          });
+        }
       },
     );
   }
 
-  void _dismiss() => setState(() {
-        _state = HudState.normal;
-        _transcript = '';
-        _activeSurfaceId = null;
-        _errorMessage = '';
+  /// Sends a follow-up reply in an ongoing conversation (a spoken answer to a
+  /// question, or a custom typed follow-up). Unlike [_sendScenario] it does not
+  /// append the tools context or reset the surface — the conversation history
+  /// already carries both.
+  Future<void> _sendFollowUp(String text) async {
+    final fromCamera = _returnToCamera;
+    setState(() {
+      _transcript = text;
+      if (fromCamera) {
+        _state = HudState.camera;
+        _analyzing = true;
+      } else {
+        _state = HudState.processing;
+      }
+      _errorMessage = '';
+    });
+    try {
+      await _conversation
+          .sendRequest(ChatMessageFactories.userText(text))
+          .timeout(const Duration(seconds: 90));
+    } catch (e) {
+      debugPrint('[Guardian/HUD] follow-up sendRequest threw: $e');
+      if (!mounted) return;
+      setState(() {
+        _analyzing = false;
+        _state = fromCamera ? HudState.camera : HudState.active;
+        _returnToCamera = false;
+        _errorMessage = e.toString();
       });
+      return;
+    }
+    if (!mounted) return;
+    // Safety net: no surface and no error fired. Clear the analyzing flag and
+    // return to the right layout.
+    if (_analyzing && _errorMessage.isEmpty && fromCamera) {
+      setState(() {
+        _analyzing = false;
+        _returnToCamera = false;
+      });
+    } else if (_state == HudState.processing && _errorMessage.isEmpty) {
+      setState(() => _state = HudState.active);
+    }
+  }
+
+  // ─── Camera vision (live mode) ────────────────────────────────────────────
+
+  Future<void> _openCamera() async {
+    if (!_camera.isActive) {
+      final ok = await _camera.start();
+      if (!ok) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+                'Camera unavailable. Use HTTPS or localhost and allow camera access.'),
+            duration: Duration(seconds: 4),
+          ),
+        );
+        return;
+      }
+    }
+    if (!mounted) return;
+    setState(() => _state = HudState.camera);
+    _startAutoCapture();
+  }
+
+  void _closeCamera() {
+    _autoCaptureTimer?.cancel();
+    _autoCaptureTimer = null;
+    _camera.stop();
+    if (!mounted) return;
+    setState(() {
+      _state = _activeSurfaceId != null ? HudState.active : HudState.normal;
+      _analyzing = false;
+    });
+  }
+
+  void _toggleAutoCapture() {
+    setState(() => _autoCapture = !_autoCapture);
+    if (_autoCapture) {
+      _startAutoCapture();
+    } else {
+      _autoCaptureTimer?.cancel();
+      _autoCaptureTimer = null;
+    }
+  }
+
+  /// Begins the periodic capture loop and fires one immediate frame so the
+  /// driver sees guidance right away instead of waiting for the first tick.
+  void _startAutoCapture() {
+    _autoCaptureTimer?.cancel();
+    _maybeAutoCapture();
+    if (_autoCapture) {
+      _autoCaptureTimer =
+          Timer.periodic(const Duration(seconds: 7), (_) => _maybeAutoCapture());
+    }
+  }
+
+  void _maybeAutoCapture() {
+    if (!mounted || !_autoCapture || _analyzing || _state != HudState.camera) {
+      return;
+    }
+    _captureAndGuide();
+  }
+
+  /// Grabs a frame and sends it as a vision turn. In camera mode the layout
+  /// stays put (the guidance panel updates beside the live video); the surface
+  /// event handler clears [_analyzing] and speaks the new guidance.
+  Future<void> _captureAndGuide() async {
+    final dataUrl = await _camera.capture();
+    if (dataUrl == null || !mounted) return;
+    await _sendCameraFrame(dataUrl);
+  }
+
+  Future<void> _sendCameraFrame(String jpegDataUrl) async {
+    // data:image/jpeg;base64,<b64> -> bytes
+    final comma = jpegDataUrl.indexOf(',');
+    final b64 = comma >= 0 ? jpegDataUrl.substring(comma + 1) : jpegDataUrl;
+    final Uint8List bytes;
+    try {
+      bytes = base64Decode(b64);
+    } catch (_) {
+      return; // malformed frame
+    }
+    const prompt =
+        "Here's a live camera frame of what I'm seeing right now. Look at it and guide me on the next step. If the image already shows something you'd otherwise ask about (e.g. which side I'm holding), don't ask — just proceed.";
+    final message = ChatMessage.user(
+      prompt,
+      parts: [DataPart(bytes, mimeType: 'image/jpeg')],
+    );
+    setState(() {
+      _analyzing = true;
+      _errorMessage = '';
+    });
+    try {
+      await _conversation
+          .sendRequest(message)
+          .timeout(const Duration(seconds: 90));
+    } catch (e) {
+      debugPrint('[Guardian/HUD] camera sendRequest threw: $e');
+      if (!mounted) return;
+      setState(() {
+        _analyzing = false;
+        _errorMessage = e.toString();
+      });
+      return;
+    }
+    if (!mounted) return;
+    // Safety net: if no surface event and no error fired, drop the spinner.
+    if (_analyzing && _errorMessage.isEmpty) {
+      setState(() => _analyzing = false);
+    }
+  }
+
+  // ─── Voice-out (TTS) ──────────────────────────────────────────────────────
+
+  /// Speaks the guidance from a freshly rendered surface. Debounced by
+  /// [_lastSpoken] so a SurfaceAdded + ComponentsUpdated pair for the same
+  /// turn isn't read twice.
+  void _speakGuide(SurfaceDefinition definition) {
+    final script = _extractSpeechText(definition);
+    if (script.isEmpty || script == _lastSpoken) return;
+    _lastSpoken = script;
+    _tts.speak(script);
+  }
+
+  /// Walks a surface's components and builds a speakable script from the Text
+  /// content (headlines, instructions, the question) plus ChoicePicker option
+  /// labels. Button-label Texts are skipped — "Continue" isn't guidance.
+  String _extractSpeechText(SurfaceDefinition def) {
+    final buttonChildIds = <String>{};
+    for (final c in def.components.values) {
+      if (c.type == 'Button') {
+        final child = c.properties['child'];
+        if (child is String) buttonChildIds.add(child);
+      }
+    }
+    final parts = <String>[];
+    for (final c in def.components.values) {
+      if (c.type == 'Text') {
+        if (buttonChildIds.contains(c.id)) continue;
+        final t = c.properties['text'];
+        if (t is String && t.trim().isNotEmpty) parts.add(t.trim());
+      } else if (c.type == 'ChoicePicker') {
+        final options = c.properties['options'];
+        if (options is List) {
+          final labels = <String>[];
+          for (final o in options) {
+            if (o is Map) {
+              final label = o['label'] ?? o['value'];
+              if (label is String && label.trim().isNotEmpty) {
+                labels.add(label.trim());
+              }
+            }
+          }
+          if (labels.isNotEmpty) parts.add('Options: ${labels.join(', ')}');
+        }
+      }
+    }
+    // Drop emoji/symbols the synthesizer would read badly, collapse whitespace.
+    return parts
+        .join('. ')
+        .replaceAll(
+            RegExp(r'[\u{1F000}-\u{1FFFF}\u{2600}-\u{27BF}\u{2190}-\u{21FF}]',
+                unicode: true),
+            '')
+        .replaceAll(RegExp(r'\s+'), ' ')
+        .trim();
+  }
+
+  void _dismiss() {
+    _tts.stop();
+    _autoCaptureTimer?.cancel();
+    _autoCaptureTimer = null;
+    _camera.stop();
+    setState(() {
+      _state = HudState.normal;
+      _transcript = '';
+      _activeSurfaceId = null;
+      _errorMessage = '';
+      _lastSpoken = '';
+      _analyzing = false;
+    });
+  }
 
   // ─── Build ───────────────────────────────────────────────────────────────
 
@@ -247,20 +545,25 @@ class _HudScreenState extends State<HudScreen> {
         onKeyEvent: (e) {
           if (e is KeyDownEvent &&
               e.logicalKey == LogicalKeyboardKey.space &&
-              _state == HudState.normal) {
-            _startListening();
+              (_state == HudState.normal ||
+                  _state == HudState.active ||
+                  _state == HudState.camera)) {
+            _beginVoiceInput(followUp: _state != HudState.normal);
           }
           if (e is KeyDownEvent &&
-              e.logicalKey == LogicalKeyboardKey.escape &&
-              _state != HudState.normal) {
-            _dismiss();
+              e.logicalKey == LogicalKeyboardKey.escape) {
+            if (_state == HudState.camera) {
+              _closeCamera();
+            } else if (_state != HudState.normal) {
+              _dismiss();
+            }
           }
         },
         child: Stack(children: [
           _mainContent(),
-          if (_state != HudState.onboarding) ...[
+          if (_state != HudState.onboarding && _state != HudState.camera) ...[
             _floatingDemoPanel(),
-            if (_state == HudState.normal) _voiceFab(),
+            if (_state == HudState.normal) ...[_voiceFab(), _cameraFab()],
           ],
           if (_state == HudState.onboarding) _onboarding(),
         ]),
@@ -286,6 +589,7 @@ class _HudScreenState extends State<HudScreen> {
               transcript: _transcript,
               trace: _trace),
           HudState.active => _activeView(),
+          HudState.camera => _cameraMode(key: const ValueKey('camera')),
         },
       ),
     );
@@ -506,7 +810,36 @@ class _HudScreenState extends State<HudScreen> {
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis),
             ),
+          const SizedBox(width: 12),
+          _cameraHeaderButton(),
         ],
+      ),
+    );
+  }
+
+  Widget _cameraHeaderButton() {
+    return GestureDetector(
+      onTap: _openCamera,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        decoration: BoxDecoration(
+          color: const Color(0xFF00FF88).withValues(alpha: 0.1),
+          borderRadius: BorderRadius.circular(20),
+          border:
+              Border.all(color: const Color(0xFF00FF88).withValues(alpha: 0.4)),
+        ),
+        child: const Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.videocam, color: Color(0xFF00FF88), size: 14),
+            SizedBox(width: 6),
+            Text('Show camera',
+                style: TextStyle(
+                    color: Color(0xFF00FF88),
+                    fontSize: 11,
+                    fontWeight: FontWeight.w700)),
+          ],
+        ),
       ),
     );
   }
@@ -535,10 +868,40 @@ class _HudScreenState extends State<HudScreen> {
 
   Widget _dismissBar() {
     return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 12),
+      padding: const EdgeInsets.fromLTRB(20, 10, 20, 14),
       child: Row(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
+          GestureDetector(
+            onTap: () => _beginVoiceInput(followUp: true),
+            child: Container(
+              padding:
+                  const EdgeInsets.symmetric(horizontal: 22, vertical: 14),
+              decoration: BoxDecoration(
+                color: const Color(0xFF00D4FF).withValues(alpha: 0.12),
+                borderRadius: BorderRadius.circular(40),
+                border: Border.all(
+                    color: const Color(0xFF00D4FF).withValues(alpha: 0.4)),
+              ),
+              child: const Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(Icons.mic, color: Color(0xFF00D4FF), size: 18),
+                  SizedBox(width: 10),
+                  Text('Speak your answer',
+                      style:
+                          TextStyle(color: Color(0xFF00D4FF), fontSize: 14)),
+                  SizedBox(width: 12),
+                  Text('· Space bar',
+                      style: TextStyle(
+                          color: Color(0xFF00D4FF),
+                          fontSize: 12,
+                          fontStyle: FontStyle.italic)),
+                ],
+              ),
+            ),
+          ),
+          const SizedBox(width: 16),
           TextButton.icon(
             onPressed: _dismiss,
             icon: Icon(Icons.arrow_back,
@@ -547,12 +910,6 @@ class _HudScreenState extends State<HudScreen> {
                 style: TextStyle(
                     color: Colors.white.withValues(alpha: 0.2), fontSize: 12)),
           ),
-          Text('  ·  ',
-              style: TextStyle(
-                  color: Colors.white.withValues(alpha: 0.1), fontSize: 12)),
-          Text('Press ESC',
-              style: TextStyle(
-                  color: Colors.white.withValues(alpha: 0.15), fontSize: 11)),
         ],
       ),
     );
@@ -715,6 +1072,278 @@ class _HudScreenState extends State<HudScreen> {
               begin: 1.0, end: 1.02, duration: 2000.ms, curve: Curves.easeInOut),
     );
   }
+
+  // ─── Camera FAB (normal HUD) ──────────────────────────────────────────────
+
+  Widget _cameraFab() {
+    return Positioned(
+      bottom: 28,
+      right: 28,
+      child: GestureDetector(
+        onTap: _openCamera,
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
+          decoration: BoxDecoration(
+            color: const Color(0xFF00FF88).withValues(alpha: 0.1),
+            borderRadius: BorderRadius.circular(40),
+            border: Border.all(
+                color: const Color(0xFF00FF88).withValues(alpha: 0.35)),
+            boxShadow: [
+              BoxShadow(
+                color: const Color(0xFF00FF88).withValues(alpha: 0.15),
+                blurRadius: 20,
+              )
+            ],
+          ),
+          child: const Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(Icons.videocam, color: Color(0xFF00FF88), size: 18),
+              SizedBox(width: 10),
+              Text('Show camera',
+                  style: TextStyle(color: Color(0xFF00FF88), fontSize: 14)),
+            ],
+          ),
+        ),
+      )
+          .animate()
+          .fadeIn(duration: 600.ms, delay: 500.ms),
+    );
+  }
+
+  // ─── Camera mode (live) ────────────────────────────────────────────────────
+
+  Widget _cameraMode({Key? key}) {
+    return Container(
+      key: key,
+      color: const Color(0xFF070A0E),
+      child: Column(
+        children: [
+          _cameraModeHeader(),
+          Expanded(child: _cameraModeBody()),
+          _cameraModeControls(),
+        ],
+      ),
+    );
+  }
+
+  Widget _cameraModeHeader() {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 14),
+      decoration: BoxDecoration(
+        color: const Color(0xFF00FF88).withValues(alpha: 0.06),
+        border: Border(
+            bottom: BorderSide(color: const Color(0xFF00FF88).withValues(alpha: 0.2))),
+      ),
+      child: Row(
+        children: [
+          const Icon(Icons.videocam, color: Color(0xFF00FF88), size: 18),
+          const SizedBox(width: 10),
+          const Text('Live camera · Guardian is watching',
+              style: TextStyle(
+                  color: Colors.white,
+                  fontSize: 15,
+                  fontWeight: FontWeight.w700)),
+          const SizedBox(width: 10),
+          if (_analyzing)
+            Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const SizedBox(
+                  width: 12,
+                  height: 12,
+                  child: CircularProgressIndicator(
+                      color: Color(0xFF00FF88), strokeWidth: 2),
+                ),
+                const SizedBox(width: 8),
+                Text('analyzing…',
+                    style: TextStyle(
+                        color: Colors.white.withValues(alpha: 0.5),
+                        fontSize: 12)),
+              ],
+            ),
+          const Spacer(),
+          GestureDetector(
+            onTap: _toggleAutoCapture,
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+              decoration: BoxDecoration(
+                color: (_autoCapture
+                        ? const Color(0xFF00FF88)
+                        : Colors.white)
+                    .withValues(alpha: _autoCapture ? 0.12 : 0.04),
+                borderRadius: BorderRadius.circular(20),
+                border: Border.all(
+                    color: (_autoCapture
+                            ? const Color(0xFF00FF88)
+                            : Colors.white)
+                        .withValues(alpha: 0.3)),
+              ),
+              child: Text(
+                _autoCapture ? 'Auto · ON' : 'Auto · OFF',
+                style: TextStyle(
+                    color: _autoCapture
+                        ? const Color(0xFF00FF88)
+                        : Colors.white.withValues(alpha: 0.6),
+                    fontSize: 11,
+                    fontWeight: FontWeight.w700),
+              ),
+            ),
+          ),
+          const SizedBox(width: 10),
+          TextButton.icon(
+            onPressed: _closeCamera,
+            icon: const Icon(Icons.close, size: 16),
+            label: const Text('Close camera'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _cameraModeBody() {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(20, 16, 20, 8),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Expanded(flex: 5, child: _cameraPreview()),
+          const SizedBox(width: 16),
+          Expanded(flex: 6, child: _cameraGuidancePanel()),
+        ],
+      ),
+    );
+  }
+
+  Widget _cameraPreview() {
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(20),
+      child: Container(
+        color: Colors.black,
+        child: _camera.isActive
+            ? HtmlElementView(viewType: _camera.viewTypeId)
+            : Center(
+                child: Text(
+                  'Camera unavailable\nUse HTTPS or localhost and allow camera access.',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                      color: Colors.white.withValues(alpha: 0.5),
+                      fontSize: 13),
+                ),
+              ),
+      ),
+    );
+  }
+
+  Widget _cameraGuidancePanel() {
+    return Container(
+      decoration: BoxDecoration(
+        color: const Color(0xFF0D1117),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: Colors.white.withValues(alpha: 0.08)),
+      ),
+      child: Stack(
+        children: [
+          if (_activeSurfaceId != null)
+            Theme(
+              data: _hudTheme(context),
+              child: SingleChildScrollView(
+                padding: const EdgeInsets.fromLTRB(20, 20, 20, 56),
+                child: Surface(
+                  surfaceContext: _controller.contextFor(_activeSurfaceId!),
+                  defaultBuilder: (_) => const Center(
+                    child: CircularProgressIndicator(
+                        color: Color(0xFF00D4FF), strokeWidth: 2),
+                  ),
+                ),
+              ),
+            )
+          else
+            Center(
+              child: Padding(
+                padding: const EdgeInsets.all(24),
+                child: Text(
+                  _camera.isActive
+                      ? 'Point the camera at the problem.\nGuardian will watch and guide you.'
+                      : 'Starting camera…',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                      color: Colors.white.withValues(alpha: 0.45),
+                      fontSize: 14,
+                      height: 1.5),
+                ),
+              ),
+            ),
+          if (_analyzing && _activeSurfaceId == null)
+            const Center(
+              child: CircularProgressIndicator(
+                  color: Color(0xFF00FF88), strokeWidth: 2),
+            ),
+        ],
+      ),
+    );
+  }
+
+  Widget _cameraModeControls() {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(20, 8, 20, 18),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          ElevatedButton.icon(
+            onPressed: _captureAndGuide,
+            icon: const Icon(Icons.camera, size: 20),
+            label: const Text('Capture now'),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: const Color(0xFF00FF88),
+              foregroundColor: Colors.black,
+              minimumSize: const Size.fromHeight(56),
+              padding:
+                  const EdgeInsets.symmetric(horizontal: 26, vertical: 16),
+              shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(14)),
+              elevation: 0,
+              textStyle:
+                  const TextStyle(fontWeight: FontWeight.w800, fontSize: 16),
+            ),
+          ),
+          const SizedBox(width: 14),
+          GestureDetector(
+            onTap: () => _beginVoiceInput(followUp: true),
+            child: Container(
+              padding:
+                  const EdgeInsets.symmetric(horizontal: 22, vertical: 16),
+              decoration: BoxDecoration(
+                color: const Color(0xFF00D4FF).withValues(alpha: 0.12),
+                borderRadius: BorderRadius.circular(40),
+                border: Border.all(
+                    color: const Color(0xFF00D4FF).withValues(alpha: 0.4)),
+              ),
+              child: const Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(Icons.mic, color: Color(0xFF00D4FF), size: 18),
+                  SizedBox(width: 10),
+                  Text('Speak',
+                      style: TextStyle(
+                          color: Color(0xFF00D4FF),
+                          fontSize: 16,
+                          fontWeight: FontWeight.w700)),
+                  SizedBox(width: 10),
+                  Text('· Space',
+                      style: TextStyle(
+                          color: Color(0xFF00D4FF),
+                          fontSize: 12,
+                          fontStyle: FontStyle.italic)),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
 
   // ─── Demo panel ───────────────────────────────────────────────────────────
 
@@ -1015,12 +1644,19 @@ class _HudScreenState extends State<HudScreen> {
       ),
       chipTheme: ChipThemeData(
         labelStyle: const TextStyle(
-            color: Colors.white, fontSize: 18, fontWeight: FontWeight.w600),
-        labelPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 12),
+            color: Colors.white, fontSize: 15, fontWeight: FontWeight.w600),
+        secondaryLabelStyle: const TextStyle(
+            color: Color(0xFF00D4FF), fontSize: 15, fontWeight: FontWeight.w700),
+        labelPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 2),
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+        // Neat uniform pills — same size, clean wrap, no checkmark clutter.
         shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(14),
-            side: BorderSide(color: Colors.white.withValues(alpha: 0.12))),
+          borderRadius: BorderRadius.circular(24),
+          side: BorderSide(color: Colors.white.withValues(alpha: 0.12)),
+        ),
+        backgroundColor: Colors.white.withValues(alpha: 0.04),
+        selectedColor: const Color(0xFF00D4FF).withValues(alpha: 0.16),
+        showCheckmark: false,
       ),
       dividerTheme: DividerThemeData(
         color: Colors.white.withValues(alpha: 0.08),

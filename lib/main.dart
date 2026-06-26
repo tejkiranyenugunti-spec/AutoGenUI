@@ -1,7 +1,12 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'screens/hud_screen.dart';
 
-void main() {
+Future<void> main() async {
+  // Load .env (FIREWORKS_API_KEY, optional FIREWORKS_MODEL /
+  // FIREWORKS_VISION_MODEL) so secrets aren't baked into the build. Falls back
+  // silently if .env is absent — the transport also honors --dart-define.
+  await dotenv.load(fileName: '.env', isOptional: true);
   runApp(const GuardianHudApp());
 }
 
